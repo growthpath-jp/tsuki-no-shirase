@@ -1,0 +1,414 @@
+// つきのしらせ API (Supabase Edge Function)
+// All data access goes through here with the service role; tables have RLS on and no policies.
+// Auth: each device holds a random token; only its SHA-256 hash is stored.
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import webpush from "npm:web-push@3.6.7";
+
+const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+  auth: { persistSession: false },
+});
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-tsuki-token",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" } });
+class ApiError extends Error {
+  constructor(public code: string, message: string, public status = 400) { super(message); }
+}
+
+/* ---------------- secrets & push ---------------- */
+let secrets: Record<string, string> | null = null;
+async function getSecrets() {
+  if (secrets) return secrets;
+  const { data, error } = await sb.from("app_secrets").select("key,value");
+  if (error) throw error;
+  secrets = Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
+  webpush.setVapidDetails(secrets.vapid_subject, secrets.vapid_public, secrets.vapid_private);
+  return secrets;
+}
+
+type Target = "owner" | "partner" | "all" | { member: string };
+async function pushTo(pairId: string, target: Target, title: string, body: string, kind: string, url = "./") {
+  await getSecrets();
+  let q = sb.from("members").select("id,role").eq("pair_id", pairId);
+  if (target === "owner" || target === "partner") q = q.eq("role", target);
+  if (typeof target === "object") q = q.eq("id", target.member);
+  const { data: mems, error } = await q;
+  if (error) throw error;
+  const ids = (mems ?? []).map((m) => m.id);
+  let delivered = 0, failed = 0, recipients = ids.length;
+  const errors: string[] = [];
+  if (ids.length) {
+    const { data: subs } = await sb.from("push_subs").select("id,endpoint,p256dh,auth").in("member_id", ids);
+    const payload = JSON.stringify({ title, body, url, tag: kind + "-" + Date.now() });
+    for (const s of subs ?? []) {
+      try {
+        await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, {
+          TTL: 60 * 60 * 24, urgency: "high",
+        });
+        delivered++;
+      } catch (e) {
+        failed++;
+        const sc = (e as { statusCode?: number }).statusCode;
+        errors.push(String(sc ?? (e as Error).message));
+        if (sc === 404 || sc === 410) await sb.from("push_subs").delete().eq("id", s.id); // expired
+      }
+    }
+  }
+  const label = typeof target === "object" ? "self" : target;
+  await sb.from("notices").insert({ pair_id: pairId, kind, target: label, title, body, delivered, failed });
+  return { recipients, delivered, failed, errors };
+}
+
+/* ---------------- dates & stats ---------------- */
+const pad = (n: number) => String(n).padStart(2, "0");
+const isDate = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const utc = (s: string) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+const toStr = (ms: number) => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; };
+const addDays = (s: string, n: number) => toStr(utc(s) + n * 864e5);
+const diff = (a: string, b: string) => Math.round((utc(b) - utc(a)) / 864e5); // b - a
+const todayJST = () => toStr(Date.now() + 9 * 3600e3);
+const DOW = "日月火水木金土";
+const fmt = (s: string) => { const d = new Date(utc(s)); return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日(${DOW[d.getUTCDay()]})`; };
+
+const DEFAULT_SETTINGS = {
+  defCycle: 28, defLen: 5,
+  notifyPartnerStart: true, notifyPartnerEnd: false,
+  remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false,
+};
+type Period = { id: string; start_date: string; end_date: string | null };
+
+function computeStats(periods: Period[], settings: typeof DEFAULT_SETTINGS, today: string) {
+  const ps = [...periods].sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
+  const cycles: number[] = [];
+  for (let i = 1; i < ps.length; i++) {
+    const c = diff(ps[i - 1].start_date, ps[i].start_date);
+    if (c >= 15 && c <= 60) cycles.push(c);
+  }
+  const rc = cycles.slice(-6);
+  const avgCycle = rc.length ? Math.round(rc.reduce((a, b) => a + b, 0) / rc.length) : Number(settings.defCycle) || 28;
+  const lens = ps.filter((p) => p.end_date).map((p) => diff(p.start_date, p.end_date!) + 1).filter((n) => n >= 1 && n <= 14).slice(-6);
+  const avgLen = lens.length ? Math.round(lens.reduce((a, b) => a + b, 0) / lens.length) : Number(settings.defLen) || 5;
+  const last = ps.at(-1) ?? null;
+  const active = last && !last.end_date && diff(last.start_date, today) >= 0 && diff(last.start_date, today) < 14 ? last : null;
+  const predictions: { start: string; end: string; ovulation: string; fertileStart: string; fertileEnd: string }[] = [];
+  if (last) {
+    // at least 4 cycles AND at least ~3.5 months ahead of today
+    for (let k = 1; k <= 24; k++) {
+      const s = addDays(last.start_date, avgCycle * k);
+      const ov = addDays(s, -14);
+      predictions.push({ start: s, end: addDays(s, avgLen - 1), ovulation: ov, fertileStart: addDays(ov, -5), fertileEnd: addDays(ov, 1) });
+      if (k >= 4 && diff(today, s) > 105) break;
+    }
+  }
+  return {
+    avgCycle, avgLen, cycleSource: rc.length ? "record" : "default", lenSource: lens.length ? "record" : "default",
+    cycles, lastStart: last?.start_date ?? null, activeId: active?.id ?? null,
+    next: predictions[0]?.start ?? null, predictions,
+  };
+}
+
+/* ---------------- auth ---------------- */
+async function sha256(s: string) {
+  const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+const randToken = () => {
+  const b = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const randCode = () => {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const b = crypto.getRandomValues(new Uint8Array(6));
+  return Array.from(b).map((x) => A[x % A.length]).join("");
+};
+type Member = { id: string; pair_id: string; role: "owner" | "partner"; name: string };
+async function auth(req: Request): Promise<Member> {
+  const t = req.headers.get("x-tsuki-token");
+  if (!t || t.length < 20) throw new ApiError("unauthorized", "この端末は登録されていません。", 401);
+  const { data } = await sb.from("members").select("id,pair_id,role,name").eq("token_hash", await sha256(t)).maybeSingle();
+  if (!data) throw new ApiError("unauthorized", "この端末の登録が見つかりません。引き継ぎコードで復元するか、最初から登録してください。", 401);
+  return data as Member;
+}
+const ownerOnly = (m: Member) => { if (m.role !== "owner") throw new ApiError("forbidden", "記録する人だけが使える操作です。", 403); };
+
+async function loadPair(pairId: string) {
+  const { data, error } = await sb.from("pairs").select("id,invite_code,settings").eq("id", pairId).single();
+  if (error) throw error;
+  return { ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings ?? {}) } };
+}
+async function loadPeriods(pairId: string) {
+  const { data, error } = await sb.from("periods").select("id,start_date,end_date").eq("pair_id", pairId).order("start_date");
+  if (error) throw error;
+  return (data ?? []) as Period[];
+}
+async function ownerName(pairId: string) {
+  const { data } = await sb.from("members").select("name").eq("pair_id", pairId).eq("role", "owner").limit(1).maybeSingle();
+  return data?.name || "パートナー";
+}
+
+/* ---------------- state ---------------- */
+async function buildState(me: Member) {
+  const today = todayJST();
+  const pair = await loadPair(me.pair_id);
+  const periods = await loadPeriods(me.pair_id);
+  const stats = computeStats(periods, pair.settings, today);
+  const { data: mems } = await sb.from("members").select("id,role,name,created_at").eq("pair_id", me.pair_id).order("created_at");
+  const memIds = (mems ?? []).map((m) => m.id);
+  const { data: subs } = memIds.length ? await sb.from("push_subs").select("member_id").in("member_id", memIds) : { data: [] };
+  const subCount = (id: string) => (subs ?? []).filter((s) => s.member_id === id).length;
+  const members = (mems ?? []).map((m) => ({ id: m.id, role: m.role, name: m.name, me: m.id === me.id, pushDevices: subCount(m.id) }));
+  const { data: notices } = await sb.from("notices").select("kind,target,title,body,delivered,failed,created_at")
+    .eq("pair_id", me.pair_id).order("created_at", { ascending: false }).limit(30);
+  if (me.role === "owner") {
+    const { data: days } = await sb.from("days").select("date,flow,symptoms,mood,memo").eq("pair_id", me.pair_id).order("date");
+    return { today, me, inviteCode: pair.invite_code, settings: pair.settings, members, periods, days: days ?? [], stats, notices: notices ?? [] };
+  }
+  // partner: minimal view
+  const active = stats.activeId ? periods.find((p) => p.id === stats.activeId) : null;
+  return {
+    today, me, members,
+    partnerView: {
+      ownerName: await ownerName(me.pair_id),
+      activeSince: active?.start_date ?? null,
+      next: pair.settings.sharePrediction ? stats.next : null,
+      predictions: pair.settings.sharePrediction ? stats.predictions.slice(0, 4) : [],
+      sharePrediction: pair.settings.sharePrediction,
+    },
+    notices: (notices ?? []).filter((n) => n.target === "partner" || n.target === "all"),
+  };
+}
+
+/* ---------------- cron (daily reminders = substitute for local notifications) ---------------- */
+async function runCron() {
+  const today = todayJST();
+  const { data: pairs } = await sb.from("pairs").select("id,settings");
+  const out: unknown[] = [];
+  for (const p of pairs ?? []) {
+    const settings = { ...DEFAULT_SETTINGS, ...(p.settings ?? {}) };
+    const periods = await loadPeriods(p.id);
+    if (!periods.length) continue;
+    const st = computeStats(periods, settings, today);
+    if (!st.next || st.activeId) continue;
+    const until = diff(today, st.next);
+    const jobs: { kind: string; target: Target; title: string; body: string }[] = [];
+    const name = await ownerName(p.id);
+    if (until === 3 && settings.remindSelf3)
+      jobs.push({ kind: "remind_self_3", target: "owner", title: "生理予定日まであと3日", body: `予定日は${fmt(st.next)}です。準備をしておきましょう。` });
+    if (until === 0 && settings.remindSelfDay)
+      jobs.push({ kind: "remind_self_day", target: "owner", title: "今日は生理予定日です", body: "始まったら「生理がきた」を押してください。" });
+    if (until === 3 && settings.remindPartner3)
+      jobs.push({ kind: "remind_partner_3", target: "partner", title: `${name}の生理予定日まであと3日`, body: `予定日は${fmt(st.next)}です（目安）。` });
+    for (const j of jobs) {
+      const { error } = await sb.from("reminders_sent").insert({ pair_id: p.id, kind: j.kind, target_date: st.next });
+      if (error) continue; // already sent for this date
+      out.push({ pair: p.id, kind: j.kind, ...(await pushTo(p.id, j.target, j.title, j.body, j.kind)) });
+    }
+  }
+  return { today, sent: out };
+}
+
+/* ---------------- router ---------------- */
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  if (req.method !== "POST") return json({ ok: false, code: "method", message: "POST only" }, 405);
+  let body: Record<string, any> = {};
+  try { body = await req.json(); } catch { /* empty */ }
+  const action = String(body.action || "");
+  try {
+    switch (action) {
+      case "vapid": {
+        const s = await getSecrets();
+        return json({ ok: true, publicKey: s.vapid_public });
+      }
+      case "cron": {
+        const s = await getSecrets();
+        if (body.secret !== s.cron_secret) throw new ApiError("forbidden", "bad secret", 403);
+        return json({ ok: true, ...(await runCron()) });
+      }
+      case "setup_owner": {
+        const name = String(body.name || "").trim().slice(0, 20);
+        if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
+        let pair = null;
+        for (let i = 0; i < 5 && !pair; i++) {
+          const { data } = await sb.from("pairs").insert({ invite_code: randCode(), settings: {} }).select("id,invite_code").single();
+          pair = data;
+        }
+        if (!pair) throw new ApiError("server", "登録に失敗しました。もう一度お試しください。", 500);
+        const token = randToken();
+        await sb.from("members").insert({ pair_id: pair.id, role: "owner", name, token_hash: await sha256(token) });
+        return json({ ok: true, token });
+      }
+      case "join": {
+        const code = String(body.code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const name = String(body.name || "").trim().slice(0, 20);
+        if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
+        const { data: pair } = await sb.from("pairs").select("id").eq("invite_code", code).maybeSingle();
+        if (!pair) throw new ApiError("not_found", "招待コードが見つかりません。記録する人の画面の「設定」にあるコードを確認してください。", 404);
+        const token = randToken();
+        await sb.from("members").insert({ pair_id: pair.id, role: "partner", name, token_hash: await sha256(token) });
+        const owner = await ownerName(pair.id);
+        await pushTo(pair.id, "owner", "パートナーが参加しました", `${name}さんが「つきのしらせ」に参加しました。`, "joined");
+        return json({ ok: true, token, ownerName: owner });
+      }
+    }
+
+    const me = await auth(req);
+    switch (action) {
+      case "state":
+        return json({ ok: true, state: await buildState(me) });
+
+      case "subscribe": {
+        const s = body.subscription;
+        if (!s?.endpoint || !s?.keys?.p256dh || !s?.keys?.auth) throw new ApiError("bad_request", "通知の登録情報が不正です。");
+        await sb.from("push_subs").upsert({ member_id: me.id, endpoint: s.endpoint, p256dh: s.keys.p256dh, auth: s.keys.auth }, { onConflict: "endpoint" });
+        return json({ ok: true });
+      }
+      case "unsubscribe": {
+        if (body.endpoint) await sb.from("push_subs").delete().eq("endpoint", String(body.endpoint)).eq("member_id", me.id);
+        return json({ ok: true });
+      }
+      case "test_push": {
+        const r = await pushTo(me.pair_id, { member: me.id }, "テスト通知", "つきのしらせ からの通知は、このように届きます。", "test");
+        return json({ ok: true, result: r });
+      }
+      case "rename": {
+        const name = String(body.name || "").trim().slice(0, 20);
+        if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
+        await sb.from("members").update({ name }).eq("id", me.id);
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "leave": {
+        await sb.from("members").delete().eq("id", me.id);
+        return json({ ok: true });
+      }
+    }
+
+    ownerOnly(me);
+    const today = todayJST();
+    switch (action) {
+      case "period_start": {
+        const date = isDate(body.date) ? body.date : today;
+        if (diff(date, today) < 0) throw new ApiError("bad_request", "未来の日付は選べません。");
+        const periods = await loadPeriods(me.pair_id);
+        const near = periods.find((p) => Math.abs(diff(p.start_date, date)) < 10);
+        if (near && !body.force) throw new ApiError("duplicate", `${fmt(near.start_date)} 開始の記録がすでにあります。`, 409);
+        const { data: ins, error } = await sb.from("periods").insert({ pair_id: me.pair_id, start_date: date }).select("id").single();
+        if (error) throw error;
+        const pair = await loadPair(me.pair_id);
+        const st = computeStats([...periods, { id: ins.id, start_date: date, end_date: null }], pair.settings, today);
+        let push = null;
+        if (body.notify !== false && pair.settings.notifyPartnerStart) {
+          push = await pushTo(me.pair_id, "partner", "生理が始まりました", `${me.name}の生理が${fmt(date)}に始まりました。体調を気づかってあげてください。`, "period_start");
+        }
+        return json({ ok: true, summary: { start: date, expectedLen: st.avgLen, expectedEnd: addDays(date, st.avgLen - 1), avgCycle: st.avgCycle, cycleSource: st.cycleSource, next: st.next }, push, state: await buildState(me) });
+      }
+      case "period_end": {
+        const date = isDate(body.date) ? body.date : today;
+        const { data: p } = await sb.from("periods").select("id,start_date").eq("id", String(body.id)).eq("pair_id", me.pair_id).maybeSingle();
+        if (!p) throw new ApiError("not_found", "対象の記録が見つかりません。");
+        if (diff(p.start_date, date) < 0 || diff(date, today) < 0) throw new ApiError("bad_request", "終了日は開始日から今日までの間で選んでください。");
+        await sb.from("periods").update({ end_date: date }).eq("id", p.id);
+        const pair = await loadPair(me.pair_id);
+        const st = computeStats(await loadPeriods(me.pair_id), pair.settings, today);
+        let push = null;
+        if (body.notify !== false && pair.settings.notifyPartnerEnd) {
+          push = await pushTo(me.pair_id, "partner", "生理が終わりました", `${me.name}の生理が${fmt(date)}に終わりました。`, "period_end");
+        }
+        return json({ ok: true, summary: { start: p.start_date, end: date, length: diff(p.start_date, date) + 1, avgCycle: st.avgCycle, avgLen: st.avgLen, next: st.next }, push, state: await buildState(me) });
+      }
+      case "period_upsert": {
+        const start = body.start, end = body.end || null;
+        if (!isDate(start) || (end && !isDate(end))) throw new ApiError("bad_request", "日付を正しく入力してください。");
+        if (diff(start, today) < 0 || (end && diff(end, today) < 0)) throw new ApiError("bad_request", "未来の日付は選べません。");
+        if (end && (diff(start, end) < 0 || diff(start, end) > 13)) throw new ApiError("bad_request", "終了日は開始日から14日以内にしてください。");
+        const periods = await loadPeriods(me.pair_id);
+        const near = periods.find((p) => p.id !== body.id && Math.abs(diff(p.start_date, start)) < 10);
+        if (near) throw new ApiError("duplicate", `${fmt(near.start_date)} 開始の記録と近すぎます。`, 409);
+        if (body.id) await sb.from("periods").update({ start_date: start, end_date: end }).eq("id", String(body.id)).eq("pair_id", me.pair_id);
+        else await sb.from("periods").insert({ pair_id: me.pair_id, start_date: start, end_date: end });
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "period_delete": {
+        await sb.from("periods").delete().eq("id", String(body.id)).eq("pair_id", me.pair_id);
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "day_save": {
+        if (!isDate(body.date)) throw new ApiError("bad_request", "日付が不正です。");
+        const row = {
+          pair_id: me.pair_id, date: body.date,
+          flow: body.flow || null, mood: body.mood || null,
+          symptoms: Array.isArray(body.symptoms) ? body.symptoms.map(String).slice(0, 20) : [],
+          memo: String(body.memo || "").slice(0, 1000), updated_at: new Date().toISOString(),
+        };
+        await sb.from("days").upsert(row, { onConflict: "pair_id,date" });
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "day_delete": {
+        await sb.from("days").delete().eq("pair_id", me.pair_id).eq("date", String(body.date));
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "settings_save": {
+        const pair = await loadPair(me.pair_id);
+        const s = { ...pair.settings };
+        for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof typeof DEFAULT_SETTINGS)[]) {
+          if (!(k in (body.settings ?? {}))) continue;
+          const v = body.settings[k];
+          if (k === "defCycle") { const n = Number(v); if (n >= 15 && n <= 60) s.defCycle = n; }
+          else if (k === "defLen") { const n = Number(v); if (n >= 1 && n <= 14) s.defLen = n; }
+          else (s as Record<string, unknown>)[k] = !!v;
+        }
+        await sb.from("pairs").update({ settings: s }).eq("id", me.pair_id);
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "test_partner": {
+        const r = await pushTo(me.pair_id, "partner", "テスト通知", `${me.name}さんの「つきのしらせ」からのテスト通知です。`, "test_partner");
+        return json({ ok: true, result: r });
+      }
+      case "regen_invite": {
+        await sb.from("pairs").update({ invite_code: randCode() }).eq("id", me.pair_id);
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "remove_member": {
+        await sb.from("members").delete().eq("id", String(body.id)).eq("pair_id", me.pair_id).eq("role", "partner");
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "transfer_code": {
+        // issue a fresh token for moving to a new phone; old token stops working
+        const token = randToken();
+        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
+        return json({ ok: true, token });
+      }
+      case "import": {
+        const ps = Array.isArray(body.periods) ? body.periods : [];
+        const ds = Array.isArray(body.days) ? body.days : [];
+        let n = 0;
+        const existing = await loadPeriods(me.pair_id);
+        for (const p of ps) {
+          if (!isDate(p.start) || existing.some((e) => Math.abs(diff(e.start_date, p.start)) < 10)) continue;
+          await sb.from("periods").insert({ pair_id: me.pair_id, start_date: p.start, end_date: isDate(p.end) ? p.end : null });
+          existing.push({ id: "", start_date: p.start, end_date: null }); n++;
+        }
+        for (const d of ds) {
+          if (!isDate(d.date)) continue;
+          await sb.from("days").upsert({ pair_id: me.pair_id, date: d.date, flow: d.flow || null, mood: d.mood || null,
+            symptoms: Array.isArray(d.symptoms) ? d.symptoms : [], memo: d.memo || "" }, { onConflict: "pair_id,date" });
+          n++;
+        }
+        return json({ ok: true, imported: n, state: await buildState(me) });
+      }
+      case "delete_all": {
+        await sb.from("pairs").delete().eq("id", me.pair_id); // cascades to everything
+        return json({ ok: true });
+      }
+    }
+    throw new ApiError("unknown_action", "不明な操作です: " + action, 400);
+  } catch (e) {
+    if (e instanceof ApiError) return json({ ok: false, code: e.code, message: e.message }, e.status);
+    console.error(e);
+    return json({ ok: false, code: "server", message: "サーバーでエラーが起きました。少し待ってからもう一度お試しください。" }, 500);
+  }
+});
