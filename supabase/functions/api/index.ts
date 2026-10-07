@@ -306,6 +306,12 @@ Deno.serve(async (req) => {
         const r = await pushTo(me.pair_id, { member: me.id }, "テスト通知", "つきのしらせ からの通知は、このように届きます。", "test");
         return json({ ok: true, result: r });
       }
+      case "transfer_code": {
+        // issue a fresh token for moving to a new phone; old token stops working
+        const token = randToken();
+        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
+        return json({ ok: true, token });
+      }
       case "rename": {
         const name = String(body.name || "").trim().slice(0, 20);
         if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
@@ -417,12 +423,6 @@ Deno.serve(async (req) => {
         await sb.from("members").delete().eq("id", String(body.id)).eq("pair_id", me.pair_id).eq("role", "partner");
         await refreshInvite(me.pair_id);
         return json({ ok: true, state: await buildState(me) });
-      }
-      case "transfer_code": {
-        // issue a fresh token for moving to a new phone; old token stops working
-        const token = randToken();
-        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
-        return json({ ok: true, token });
       }
       case "import": {
         const ps = Array.isArray(body.periods) ? body.periods : [];
