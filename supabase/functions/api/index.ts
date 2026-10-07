@@ -291,7 +291,7 @@ Deno.serve(async (req) => {
     }
 
     const me = await auth(req);
-    if (me.status !== "active" && !["state", "subscribe", "unsubscribe", "test_push", "leave"].includes(action))
+    if (me.status !== "active" && !["state", "subscribe", "unsubscribe", "test_push", "leave", "claim"].includes(action))
       throw new ApiError("pending", "記録する人の承認を待っています。", 403);
     switch (action) {
       case "state":
@@ -310,6 +310,14 @@ Deno.serve(async (req) => {
       case "test_push": {
         const r = await pushTo(me.pair_id, { member: me.id }, "テスト通知", "つきのしらせ からの通知は、このように届きます。", "test");
         return json({ ok: true, result: r });
+      }
+      case "claim": {
+        // a device takes over this member with a transfer code: issue a fresh token so every other device
+        // holding the old one is signed out, and drop old devices' push registrations (one phone per person)
+        const token = randToken();
+        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
+        await sb.from("push_subs").delete().eq("member_id", me.id);
+        return json({ ok: true, token });
       }
       case "transfer_code": {
         // issue a fresh token for moving to a new phone; old token stops working

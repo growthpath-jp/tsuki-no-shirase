@@ -177,8 +177,18 @@ const pushSupported = () => "serviceWorker" in navigator && "PushManager" in win
 let swReg = null;
 async function registerSW() {
   if (!("serviceWorker" in navigator)) return null;
-  try { swReg = await navigator.serviceWorker.register("sw.js"); return swReg; } catch (e) { return null; }
+  try { swReg = await navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }); return swReg; } catch (e) { return null; }
 }
+/* auto-update: when a new version of the app is published, the new service worker takes over and the page reloads once */
+if ("serviceWorker" in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return; // first install: nothing to refresh
+    reloading = true; location.reload();
+  });
+}
+function checkUpdate() { try { if (swReg) swReg.update(); } catch (e) {} }
 function b64ToU8(b) { const p = "=".repeat((4 - b.length % 4) % 4); const s = atob((b + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from([...s].map(c => c.charCodeAt(0))); }
 async function pushStatus() {
   if (!pushSupported()) return "unsupported";
@@ -287,7 +297,7 @@ function renderSetup() {
     catch (er) { toast(er.message); busy(e.target, false); } };
   $("#fRestore").onsubmit = async e => { e.preventDefault(); busy(e.target, true);
     setToken($("#rCode").value.trim());
-    try { await api("state"); toast("復元しました"); await boot(true); }
+    try { const r = await api("claim"); setToken(r.token); toast("復元しました。前の携帯は使えなくなりました"); await boot(true); }
     catch (er) { setToken(null); toast(er.message || "復元できませんでした"); busy(e.target, false); } };
 }
 function renderPushPrompt() {
@@ -679,7 +689,7 @@ function bindAccount(v) {
   $("#pReOn").onclick = async e => { e.target.disabled = true; try { await enablePush(); toast("通知を登録しました"); render(); } catch (er) { toast(er.message); e.target.disabled = false; } };
   $("#nmSave").onclick = async () => { try { await api("rename", { name: $("#nm").value }); toast("変更しました"); render(); } catch (er) { toast(er.message); } };
   $("#xfer").onclick = async e => { const b = e.target; if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "発行する（今のコードは使えなくなります）"; return; }
-    try { const r = await api("transfer_code"); setToken(r.token); $("#xferOut").innerHTML = `<div class="note ok"><b>引き継ぎコード</b>新しい携帯で「機種変更・再インストールした」に入力してください。他の人には見せないでください。<div class="mono" style="margin-top:6px">${esc(r.token)}</div><button class="btn sm" style="margin-top:6px" id="xCopy">コピー</button></div>`; $("#xCopy").onclick = () => copy(r.token); } catch (er) { toast(er.message); } };
+    try { const r = await api("transfer_code"); setToken(r.token); $("#xferOut").innerHTML = `<div class="note ok"><b>引き継ぎコード</b>新しい携帯で「機種変更・再インストールした」に入力してください。入力した時点で、この携帯は使えなくなり、通知も新しい携帯だけに届きます。他の人には見せないでください。<div class="mono" style="margin-top:6px">${esc(r.token)}</div><button class="btn sm" style="margin-top:6px" id="xCopy">コピー</button></div>`; $("#xCopy").onclick = () => copy(r.token); } catch (er) { toast(er.message); } };
 }
 const csv = rows => "﻿" + rows.map(r => r.map(x => { x = String(x ?? ""); return /[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; }).join(",")).join("\r\n");
 
@@ -697,7 +707,7 @@ async function boot(justJoined) {
   if (justJoined) { const ps = await pushStatus(); S.justJoined = ps !== "on" && ps !== "unsupported"; }
   render();
 }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.state) refresh(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { checkUpdate(); if (S.state) refresh(); } });
 if (navigator.serviceWorker) navigator.serviceWorker.addEventListener("message", e => { if (e.data && e.data.type === "pushed" && S.state) refresh(); });
 /* disable pinch zoom (iOS ignores user-scalable=no) */
 ["gesturestart", "gesturechange", "gestureend"].forEach(ev => document.addEventListener(ev, e => e.preventDefault(), { passive: false }));
