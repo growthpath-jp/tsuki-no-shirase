@@ -35,7 +35,7 @@ async function pushTo(pairId: string, target: Target, title: string, body: strin
   await getSecrets();
   const shown = { title, body };
   const { data: pr } = await sb.from("pairs").select("settings").eq("id", pairId).maybeSingle();
-  if (pr?.settings?.discreetPush) { shown.title = "つきのしらせ"; shown.body = "新しいお知らせがあります。アプリを開いて確認してください。"; }
+  if (pr?.settings?.discreetPush) { shown.title = "お知らせ"; shown.body = "新しいメッセージがあります。"; }
   let q = sb.from("members").select("id,role").eq("pair_id", pairId);
   if (target === "owner" || target === "partner") q = q.eq("role", target).eq("status", "active");
   if (typeof target === "object") q = q.eq("id", target.member);
@@ -81,6 +81,7 @@ const DEFAULT_SETTINGS = {
   defCycle: 28, defLen: 5,
   notifyPartnerStart: true, notifyPartnerEnd: false,
   remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false, discreetPush: false,
+  pmsNotify: true, pmsDays: 10,
 };
 type Period = { id: string; start_date: string; end_date: string | null };
 
@@ -200,6 +201,7 @@ async function buildState(me: Member) {
       next: pair.settings.sharePrediction ? stats.next : null,
       predictions: pair.settings.sharePrediction ? stats.predictions.slice(0, 4) : [],
       sharePrediction: pair.settings.sharePrediction,
+      pmsDays: pair.settings.sharePrediction ? pair.settings.pmsDays : null,
     },
     notices: (notices ?? []).filter((n) => n.target === "partner" || n.target === "all"),
   };
@@ -224,6 +226,9 @@ async function runCron() {
       jobs.push({ kind: "remind_self_3", target: "owner", title: "生理予定日まであと3日", body: `予定日は${fmt(st.next)}です。準備をしておきましょう。` });
     if (until === 0 && settings.remindSelfDay)
       jobs.push({ kind: "remind_self_day", target: "owner", title: "今日は生理予定日です", body: "始まったら「生理がきた」を押してください。" });
+    const pmsDays = Math.min(10, Math.max(1, Number(settings.pmsDays) || 10));
+    if (until === pmsDays && settings.pmsNotify)
+      jobs.push({ kind: "pms_partner", target: "partner", title: `${name}の気分がゆらぎやすい時期に入りました`, body: `生理予定日（${fmt(st.next)}）の${pmsDays}日前です。いつもより少し気づかってあげてください（目安）。` });
     if (until === 3 && settings.remindPartner3)
       jobs.push({ kind: "remind_partner_3", target: "partner", title: `${name}の生理予定日まであと3日`, body: `予定日は${fmt(st.next)}です（目安）。` });
     for (const j of jobs) {
@@ -398,6 +403,7 @@ Deno.serve(async (req) => {
           const v = body.settings[k];
           if (k === "defCycle") { const n = Number(v); if (n >= 15 && n <= 60) s.defCycle = n; }
           else if (k === "defLen") { const n = Number(v); if (n >= 1 && n <= 14) s.defLen = n; }
+          else if (k === "pmsDays") { const n = Number(v); if (Number.isInteger(n) && n >= 1 && n <= 10) s.pmsDays = n; }
           else (s as Record<string, unknown>)[k] = !!v;
         }
         await sb.from("pairs").update({ settings: s }).eq("id", me.pair_id);

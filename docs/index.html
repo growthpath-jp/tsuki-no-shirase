@@ -93,6 +93,7 @@ textarea{min-height:90px}
 .cd.sel{outline:3px solid rgba(92,186,183,.6)}
 .cd .mk{position:absolute;top:-3px;left:50%;transform:translateX(-50%);font-size:.58rem;line-height:1;padding:2px 4px;border-radius:6px;background:var(--ink);color:#fff;white-space:nowrap;font-weight:700}
 .cd .mk.s{background:var(--coral-deep)} .cd .mk.e{background:#7a5a5c}
+.cd .devil{position:absolute;top:-6px;right:-4px;width:20px;height:20px;pointer-events:none}
 .cd .dot{position:absolute;bottom:4px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:currentColor;opacity:.7}
 .legend{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:.75rem;color:var(--muted);margin-top:10px}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-2px;margin-right:4px}
@@ -208,6 +209,10 @@ async function localNotify(title, body) {
   } catch (e) {}
 }
 
+/* cute devil mark for the first day of the PMS window */
+const DEVIL = '<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M9 14 L5 3 L15 10Z" fill="#8e5bd6"/><path d="M31 14 L35 3 L25 10Z" fill="#8e5bd6"/><circle cx="20" cy="22" r="14" fill="#b58cf0"/><circle cx="20" cy="22" r="14" fill="none" stroke="#7a49c7" stroke-width="1.5"/><path d="M12.5 20 q2.5 -3 5 0" stroke="#3b2266" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M22.5 20 q2.5 -3 5 0" stroke="#3b2266" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M14 26 q6 6 12 0" stroke="#3b2266" stroke-width="2" fill="#fff" stroke-linecap="round"/><circle cx="11.5" cy="25" r="2.2" fill="#f2797b" opacity=".7"/><circle cx="28.5" cy="25" r="2.2" fill="#f2797b" opacity=".7"/></svg>';
+const pmsDays = () => { const v = owner() ? S.state.settings.pmsDays : S.state.partnerView && S.state.partnerView.pmsDays; return Math.min(10, Math.max(1, Number(v) || 10)); };
+
 /* ---------- stats helpers (client side, from server state) ---------- */
 function owner() { return S.state && S.state.me.role === "owner"; }
 const activePartners = () => S.state.members.filter(m => m.role === "partner" && m.status === "active");
@@ -218,7 +223,7 @@ function periodEnd(p, st) {
   return addDays(p.start_date, st.avgLen - 1);
 }
 function dayInfo(d) {
-  const r = { p: false, pp: false, f: false, o: false, start: false, end: false };
+  const r = { p: false, pp: false, f: false, o: false, start: false, end: false, pms: false };
   const st = S.state.stats; const t = S.state.today;
   for (const p of S.state.periods) {
     if (p.start_date === d) r.start = true;
@@ -228,6 +233,7 @@ function dayInfo(d) {
   const act = st.activeId && S.state.periods.find(p => p.id === st.activeId);
   if (!r.p && act && diff(t, d) > 0 && diff(d, addDays(act.start_date, st.avgLen - 1)) >= 0) r.pp = true;
   if (!r.p) for (const x of st.predictions) if (diff(x.start, d) >= 0 && diff(d, x.end) >= 0 && diff(t, d) >= 0) r.pp = true;
+  for (const x of st.predictions) if (addDays(x.start, -pmsDays()) === d) r.pms = true;
   for (const x of st.predictions) { if (x.ovulation === d) r.o = true; else if (diff(x.fertileStart, d) >= 0 && diff(d, x.fertileEnd) >= 0) r.f = true; }
   return r;
 }
@@ -382,7 +388,7 @@ function viewHomeOwner(v) {
       <div class="stat"><b>${st.avgCycle}日</b><span>平均周期${st.cycleSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${st.avgLen}日</b><span>平均の生理日数${st.lenSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${s.periods.length}回</b><span>記録した回数</span></div></div></div>
-    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}・排卵日の目安 ${fmt(x.ovulation)}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
+    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}・排卵日の目安 ${fmt(x.ovulation)}・PMS期間の始まり ${fmt(addDays(x.start, -pmsDays()))}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
       <p class="small muted" style="margin:8px 0 0">予定日・排卵日は過去の周期からの目安です。避妊や妊娠の判断には使わないでください。</p></div>
   </div>`;
   const a = $("#bStart"); a && (a.onclick = startFlow);
@@ -503,11 +509,13 @@ function viewCalendar(v) {
       if (r.p) cls.push("p"); else if (r.pp) cls.push("pp"); else if (r.o) cls.push("o"); else if (r.f) cls.push("f");
       if (r.start) mk = `<span class="mk s">開始</span>`; else if (r.end) mk = `<span class="mk e">終了</span>`;
       if (s.days.some(x => x.date === d)) dot = `<span class="dot"></span>`;
+      if (r.pms) dot += `<span class="devil" title="PMS期間の始まり（目安）">${DEVIL}</span>`;
     } else {
       const pv = s.partnerView;
       if (pv.activeSince && diff(pv.activeSince, d) >= 0 && diff(d, t) >= 0) cls.push("p");
       if (pv.activeSince === d) mk = `<span class="mk s">開始</span>`;
       for (const x of pv.predictions || []) if (diff(x.start, d) >= 0 && diff(d, x.end) >= 0 && !cls.includes("p")) cls.push("pp");
+      if (pv.pmsDays) for (const x of pv.predictions || []) if (addDays(x.start, -pmsDays()) === d) dot += `<span class="devil" title="PMS期間の始まり（目安）">${DEVIL}</span>`;
     }
     if (d === t) cls.push("t"); if (d === S.sel) cls.push("sel");
     cells += `<button class="${cls.join(" ")}" data-d="${d}" aria-label="${fmtY(d)}">${mk}${+d.slice(8)}${dot}</button>`;
@@ -518,7 +526,8 @@ function viewCalendar(v) {
     <div class="cal">${cells}</div>
     <div class="legend"><span><i style="background:var(--coral)"></i>生理</span><span><i style="background:var(--coral-soft);box-shadow:inset 0 0 0 2px var(--coral)"></i>生理予定</span>
       ${isOwner ? `<span><i style="background:var(--teal-soft)"></i>妊娠しやすい期間（目安）</span><span><i style="background:var(--teal)"></i>排卵日（目安）</span>` : ""}
-      <span><i style="background:var(--coral-deep)"></i>開始・終了のマーク</span></div>
+      <span><i style="background:var(--coral-deep)"></i>開始・終了のマーク</span>
+      <span><span style="display:inline-block;width:16px;height:16px;vertical-align:-3px;margin-right:4px">${DEVIL}</span>PMS期間の始まり（目安）</span></div>
   </div><div class="card" id="dayCard"></div></div>`;
   $("#cPrev").onclick = () => { if (--S.calM < 0) { S.calM = 11; S.calY--; } render(); };
   $("#cNext").onclick = () => { if (++S.calM > 11) { S.calM = 0; S.calY++; } render(); };
@@ -530,7 +539,7 @@ function dayCard(el) {
   const d = S.sel, s = S.state;
   if (!owner()) { el.innerHTML = `<h2>${fmtY(d)}</h2><p class="small muted" style="margin:0">${s.partnerView.sharePrediction ? "予定日は目安です。" : "予定日の共有はオフになっています。"}</p>`; return; }
   const r = dayInfo(d), l = s.days.find(x => x.date === d);
-  const tags = [r.start && "生理開始日", r.end && "生理終了日", r.p && !r.start && !r.end && "生理", r.pp && "生理予定（目安）", r.o && "排卵日（目安）", r.f && "妊娠しやすい期間（目安）"].filter(Boolean);
+  const tags = [r.start && "生理開始日", r.end && "生理終了日", r.p && !r.start && !r.end && "生理", r.pp && "生理予定（目安）", r.o && "排卵日（目安）", r.f && "妊娠しやすい期間（目安）", r.pms && `PMS期間の始まり（予定日の${pmsDays()}日前・目安）`].filter(Boolean);
   el.innerHTML = `<h2>${fmtY(d)}</h2>${tags.length ? `<div class="row" style="margin-bottom:8px">${tags.map(x => `<span class="pill" style="background:var(--teal-soft);color:var(--ink)">${x}</span>`).join("")}</div>` : ""}
     ${l ? `<p class="small" style="margin:0">${[l.flow && "経血量：" + esc(l.flow), l.symptoms.length && "症状：" + esc(l.symptoms.join("・")), l.mood && "気分：" + esc(l.mood), l.memo && "メモ：" + esc(l.memo)].filter(Boolean).join("<br>")}</p>` : `<p class="small muted" style="margin:0">この日の体調記録はありません。</p>`}
     <div class="row" style="margin-top:10px"><button class="btn sm" id="dLog">${l ? "体調記録を編集" : "体調を記録"}</button></div>`;
@@ -613,7 +622,10 @@ function viewSettingsOwner(v) {
       ${sw("nPartner3", "予定日の3日前にパートナーへお知らせ", st.remindPartner3)}
       ${sw("nShare", "パートナーの画面に予定日を表示する", st.sharePrediction)}
       ${sw("nDiscreet", "目立たない通知にする（ロック画面に内容を出さない）", st.discreetPush)}
-      <p class="small muted" style="margin:4px 0 0">予定日のお知らせは毎朝8時ごろに届きます。目立たない通知をオンにすると、2人とも「新しいお知らせがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
+      ${sw("nPms", "PMS期間の始まりをパートナーに知らせる", st.pmsNotify)}
+      <div class="switch"><label for="nPmsDays">PMS期間の始まり（生理予定日の何日前か）</label>
+        <select id="nPmsDays" style="width:auto;min-height:40px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff;font-size:16px">${Array.from({ length: 10 }, (_, i) => 10 - i).map(n => `<option value="${n}" ${Number(st.pmsDays || 10) === n ? "selected" : ""}>${n}日前</option>`).join("")}</select></div>
+      <p class="small muted" style="margin:4px 0 0">予定日やPMS期間のお知らせは毎朝8時ごろに届きます。カレンダーでは、PMS期間の始まりの日に悪魔マークが付きます。目立たない通知をオンにすると、2人とも「新しいお知らせがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
     </form>
     <form class="card" id="cf" style="display:grid;gap:8px"><h2 style="margin:0">予測の初期値</h2>
       <p class="small muted" style="margin:0">記録が2回以上たまると、実際の記録から自動で計算します。</p>
@@ -634,8 +646,9 @@ function viewSettingsOwner(v) {
   v.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await api("approve_member", { id: b.dataset.ap }); toast("承認しました"); render(); } catch (er) { toast(er.message); b.disabled = false; } });
   v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に" + b.textContent; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
   $("#tPartner").onclick = async e => { e.target.disabled = true; try { const r = await api("test_partner"); $("#tpOut").innerHTML = `<div class="note ${r.result.delivered ? "ok" : "warn"}">${r.result.delivered ? `パートナーの携帯${r.result.delivered}台に送りました。届いたか確認してもらってください。` : "届けられる携帯がありません。パートナーのアプリで通知をオンにしてもらってください。"}</div>`; } catch (er) { toast(er.message); } e.target.disabled = false; };
-  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush" };
+  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush", nPms: "pmsNotify" };
   Object.entries(map).forEach(([id, k]) => $("#" + id).onchange = async e => { try { await api("settings_save", { settings: { [k]: e.target.checked } }); toast("保存しました"); } catch (er) { toast(er.message); e.target.checked = !e.target.checked; } });
+  $("#nPmsDays").onchange = async e => { try { await api("settings_save", { settings: { pmsDays: Number(e.target.value) } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   $("#cf").onsubmit = async e => { e.preventDefault(); try { await api("settings_save", { settings: { defCycle: $("#dC").value, defLen: $("#dL").value } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   bindAccount(v);
   $("#xCsv").onclick = () => { const rows = [["開始日", "終了日", "日数", "前回からの周期"]]; s.periods.forEach((p, i) => rows.push([p.start_date, p.end_date || "", p.end_date ? diff(p.start_date, p.end_date) + 1 : "", i ? diff(s.periods[i - 1].start_date, p.start_date) : ""])); download("生理記録.csv", csv(rows), "text/csv"); };
