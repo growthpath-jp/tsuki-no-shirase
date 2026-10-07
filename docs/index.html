@@ -598,7 +598,8 @@ function viewSettingsOwner(v) {
     <div id="pushCard"></div>
     <div class="card" style="display:grid;gap:8px"><h2 style="margin:0">パートナー</h2>
       <p class="small muted" style="margin:0">パートナーにこのアプリを入れてもらい、「パートナーとして参加」でこのコードを入力してもらいます。コードは1回使うと新しいコードに変わり、参加はあなたの承認が必要です。</p>
-      <div class="row between"><span class="code">${esc(s.inviteCode)}</span><div class="row"><button class="btn sm" id="cCopy">コピー</button><button class="btn sm" id="cRegen">作り直す</button></div></div>
+      ${s.inviteCode ? `<div class="row between"><span class="code">${esc(s.inviteCode)}</span><div class="row"><button class="btn sm" id="cCopy">コピー</button><button class="btn sm" id="cRegen">作り直す</button></div></div>`
+        : `<div class="note ok small">パートナーが登録済み（または承認待ち）のため、招待コードはありません。パートナーを外すと、新しいコードが自動で発行されます。</div>`}
       <div class="list">${partners.length ? partners.map(m => m.status === "pending"
         ? `<div class="it"><div><b>${esc(m.name)}</b><div class="small" style="color:var(--warn)">承認待ち（参加リクエスト）</div></div><div class="row"><button class="btn sm pri" data-ap="${m.id}">承認</button><button class="btn sm danger" data-rm="${m.id}">断る</button></div></div>`
         : `<div class="it"><div><b>${esc(m.name)}</b><div class="small muted">${m.pushDevices ? `通知オン（${m.pushDevices}台）` : "通知オフ"}</div></div><button class="btn sm danger" data-rm="${m.id}">外す</button></div>`).join("") : `<p class="small muted" style="margin:0">まだ参加していません。</p>`}</div>
@@ -628,8 +629,8 @@ function viewSettingsOwner(v) {
     <p class="small muted" style="padding:0 4px">予定日・排卵日は目安です。気になる症状があるときは医療機関に相談してください。</p>
   </div>`;
   pushCard($("#pushCard"));
-  $("#cCopy").onclick = () => copy(s.inviteCode);
-  $("#cRegen").onclick = async () => { try { await api("regen_invite"); toast("新しいコードにしました"); render(); } catch (er) { toast(er.message); } };
+  if ($("#cCopy")) $("#cCopy").onclick = () => copy(s.inviteCode);
+  if ($("#cRegen")) $("#cRegen").onclick = async () => { try { await api("regen_invite"); toast("新しいコードにしました"); render(); } catch (er) { toast(er.message); } };
   v.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await api("approve_member", { id: b.dataset.ap }); toast("承認しました"); render(); } catch (er) { toast(er.message); b.disabled = false; } });
   v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に" + b.textContent; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
   $("#tPartner").onclick = async e => { e.target.disabled = true; try { const r = await api("test_partner"); $("#tpOut").innerHTML = `<div class="note ${r.result.delivered ? "ok" : "warn"}">${r.result.delivered ? `パートナーの携帯${r.result.delivered}台に送りました。届いたか確認してもらってください。` : "届けられる携帯がありません。パートナーのアプリで通知をオンにしてもらってください。"}</div>`; } catch (er) { toast(er.message); } e.target.disabled = false; };

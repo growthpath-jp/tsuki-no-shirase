@@ -159,6 +159,11 @@ async function loadPeriods(pairId: string) {
   if (error) throw error;
   return (data ?? []) as Period[];
 }
+// invite code exists only while the pair has no partner (active or pending)
+async function refreshInvite(pairId: string) {
+  const { count } = await sb.from("members").select("id", { count: "exact", head: true }).eq("pair_id", pairId).eq("role", "partner");
+  if ((count ?? 0) === 0) await sb.from("pairs").update({ invite_code: randCode() }).eq("id", pairId).is("invite_code", null);
+}
 async function ownerName(pairId: string) {
   const { data } = await sb.from("members").select("name").eq("pair_id", pairId).eq("role", "owner").limit(1).maybeSingle();
   return data?.name || "パートナー";
@@ -268,7 +273,7 @@ Deno.serve(async (req) => {
         if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
         // single-use code: claim it atomically by rotating it (a second simultaneous use finds no match)
         const { data: pair } = code.length >= 6
-          ? await sb.from("pairs").update({ invite_code: randCode() }).eq("invite_code", code).select("id").maybeSingle()
+          ? await sb.from("pairs").update({ invite_code: null }).eq("invite_code", code).select("id").maybeSingle()
           : { data: null };
         if (!pair) throw new ApiError("not_found", "招待コードが見つかりません。コードは1回使うと変わります。記録する人の画面の「設定」にある最新のコードを確認してください。", 404);
         const token = randToken();
@@ -307,7 +312,9 @@ Deno.serve(async (req) => {
         return json({ ok: true, state: await buildState(me) });
       }
       case "leave": {
+        if (me.role === "owner") throw new ApiError("forbidden", "記録する人は「すべてのデータを削除」を使ってください。", 403);
         await sb.from("members").delete().eq("id", me.id);
+        await refreshInvite(me.pair_id);
         return json({ ok: true });
       }
     }
@@ -394,6 +401,8 @@ Deno.serve(async (req) => {
         return json({ ok: true, result: r });
       }
       case "regen_invite": {
+        const { count } = await sb.from("members").select("id", { count: "exact", head: true }).eq("pair_id", me.pair_id).eq("role", "partner");
+        if ((count ?? 0) > 0) throw new ApiError("has_partner", "パートナーが登録済み（または承認待ち）のため、招待コードは発行できません。", 409);
         await sb.from("pairs").update({ invite_code: randCode() }).eq("id", me.pair_id);
         return json({ ok: true, state: await buildState(me) });
       }
@@ -405,6 +414,7 @@ Deno.serve(async (req) => {
       }
       case "remove_member": {
         await sb.from("members").delete().eq("id", String(body.id)).eq("pair_id", me.pair_id).eq("role", "partner");
+        await refreshInvite(me.pair_id);
         return json({ ok: true, state: await buildState(me) });
       }
       case "transfer_code": {
