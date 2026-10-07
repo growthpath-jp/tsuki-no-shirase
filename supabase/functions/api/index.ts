@@ -33,8 +33,11 @@ async function getSecrets() {
 type Target = "owner" | "partner" | "all" | { member: string };
 async function pushTo(pairId: string, target: Target, title: string, body: string, kind: string, url = "./") {
   await getSecrets();
+  const shown = { title, body };
+  const { data: pr } = await sb.from("pairs").select("settings").eq("id", pairId).maybeSingle();
+  if (pr?.settings?.discreetPush) { shown.title = "つきのしらせ"; shown.body = "新しいお知らせがあります。アプリを開いて確認してください。"; }
   let q = sb.from("members").select("id,role").eq("pair_id", pairId);
-  if (target === "owner" || target === "partner") q = q.eq("role", target);
+  if (target === "owner" || target === "partner") q = q.eq("role", target).eq("status", "active");
   if (typeof target === "object") q = q.eq("id", target.member);
   const { data: mems, error } = await q;
   if (error) throw error;
@@ -43,7 +46,7 @@ async function pushTo(pairId: string, target: Target, title: string, body: strin
   const errors: string[] = [];
   if (ids.length) {
     const { data: subs } = await sb.from("push_subs").select("id,endpoint,p256dh,auth").in("member_id", ids);
-    const payload = JSON.stringify({ title, body, url, tag: kind + "-" + Date.now() });
+    const payload = JSON.stringify({ title: shown.title, body: shown.body, url, tag: kind + "-" + Date.now() });
     for (const s of subs ?? []) {
       try {
         await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, {
@@ -77,7 +80,7 @@ const fmt = (s: string) => { const d = new Date(utc(s)); return `${d.getUTCMonth
 const DEFAULT_SETTINGS = {
   defCycle: 28, defLen: 5,
   notifyPartnerStart: true, notifyPartnerEnd: false,
-  remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false,
+  remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false, discreetPush: false,
 };
 type Period = { id: string; start_date: string; end_date: string | null };
 
@@ -125,11 +128,11 @@ const randCode = () => {
   const b = crypto.getRandomValues(new Uint8Array(6));
   return Array.from(b).map((x) => A[x % A.length]).join("");
 };
-type Member = { id: string; pair_id: string; role: "owner" | "partner"; name: string };
+type Member = { id: string; pair_id: string; role: "owner" | "partner"; name: string; status: "pending" | "active" };
 async function auth(req: Request): Promise<Member> {
   const t = req.headers.get("x-tsuki-token");
   if (!t || t.length < 20) throw new ApiError("unauthorized", "この端末は登録されていません。", 401);
-  const { data } = await sb.from("members").select("id,pair_id,role,name").eq("token_hash", await sha256(t)).maybeSingle();
+  const { data } = await sb.from("members").select("id,pair_id,role,name,status").eq("token_hash", await sha256(t)).maybeSingle();
   if (!data) throw new ApiError("unauthorized", "この端末の登録が見つかりません。引き継ぎコードで復元するか、最初から登録してください。", 401);
   return data as Member;
 }
@@ -156,11 +159,11 @@ async function buildState(me: Member) {
   const pair = await loadPair(me.pair_id);
   const periods = await loadPeriods(me.pair_id);
   const stats = computeStats(periods, pair.settings, today);
-  const { data: mems } = await sb.from("members").select("id,role,name,created_at").eq("pair_id", me.pair_id).order("created_at");
+  const { data: mems } = await sb.from("members").select("id,role,name,status,created_at").eq("pair_id", me.pair_id).order("created_at");
   const memIds = (mems ?? []).map((m) => m.id);
   const { data: subs } = memIds.length ? await sb.from("push_subs").select("member_id").in("member_id", memIds) : { data: [] };
   const subCount = (id: string) => (subs ?? []).filter((s) => s.member_id === id).length;
-  const members = (mems ?? []).map((m) => ({ id: m.id, role: m.role, name: m.name, me: m.id === me.id, pushDevices: subCount(m.id) }));
+  const members = (mems ?? []).map((m) => ({ id: m.id, role: m.role, name: m.name, status: m.status, me: m.id === me.id, pushDevices: subCount(m.id) }));
   const { data: notices } = await sb.from("notices").select("kind,target,title,body,delivered,failed,created_at")
     .eq("pair_id", me.pair_id).order("created_at", { ascending: false }).limit(30);
   if (me.role === "owner") {
@@ -168,6 +171,9 @@ async function buildState(me: Member) {
     return { today, me, inviteCode: pair.invite_code, settings: pair.settings, members, periods, days: days ?? [], stats, notices: notices ?? [] };
   }
   // partner: minimal view
+  if (me.status !== "active") {
+    return { today, me, members: members.filter((m) => m.me), pending: true, partnerView: { ownerName: await ownerName(me.pair_id), activeSince: null, next: null, predictions: [], sharePrediction: false }, notices: [] };
+  }
   const active = stats.activeId ? periods.find((p) => p.id === stats.activeId) : null;
   return {
     today, me, members,
@@ -246,17 +252,22 @@ Deno.serve(async (req) => {
         const code = String(body.code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
         const name = String(body.name || "").trim().slice(0, 20);
         if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
-        const { data: pair } = await sb.from("pairs").select("id").eq("invite_code", code).maybeSingle();
-        if (!pair) throw new ApiError("not_found", "招待コードが見つかりません。記録する人の画面の「設定」にあるコードを確認してください。", 404);
+        // single-use code: claim it atomically by rotating it (a second simultaneous use finds no match)
+        const { data: pair } = code.length >= 6
+          ? await sb.from("pairs").update({ invite_code: randCode() }).eq("invite_code", code).select("id").maybeSingle()
+          : { data: null };
+        if (!pair) throw new ApiError("not_found", "招待コードが見つかりません。コードは1回使うと変わります。記録する人の画面の「設定」にある最新のコードを確認してください。", 404);
         const token = randToken();
-        await sb.from("members").insert({ pair_id: pair.id, role: "partner", name, token_hash: await sha256(token) });
+        await sb.from("members").insert({ pair_id: pair.id, role: "partner", name, status: "pending", token_hash: await sha256(token) });
         const owner = await ownerName(pair.id);
-        await pushTo(pair.id, "owner", "パートナーが参加しました", `${name}さんが「つきのしらせ」に参加しました。`, "joined");
+        await pushTo(pair.id, "owner", "参加リクエストが届きました", `${name}さんがパートナーとして参加を希望しています。「設定」で承認してください。`, "join_request");
         return json({ ok: true, token, ownerName: owner });
       }
     }
 
     const me = await auth(req);
+    if (me.status !== "active" && !["state", "subscribe", "unsubscribe", "test_push", "leave"].includes(action))
+      throw new ApiError("pending", "記録する人の承認を待っています。", 403);
     switch (action) {
       case "state":
         return json({ ok: true, state: await buildState(me) });
@@ -370,6 +381,12 @@ Deno.serve(async (req) => {
       }
       case "regen_invite": {
         await sb.from("pairs").update({ invite_code: randCode() }).eq("id", me.pair_id);
+        return json({ ok: true, state: await buildState(me) });
+      }
+      case "approve_member": {
+        const { data: m } = await sb.from("members").update({ status: "active" }).eq("id", String(body.id)).eq("pair_id", me.pair_id).eq("role", "partner").select("id,name").maybeSingle();
+        if (!m) throw new ApiError("not_found", "対象のパートナーが見つかりません。");
+        await pushTo(me.pair_id, { member: m.id }, "参加が承認されました", `${me.name}さんの「つきのしらせ」に参加しました。`, "approved");
         return json({ ok: true, state: await buildState(me) });
       }
       case "remove_member": {

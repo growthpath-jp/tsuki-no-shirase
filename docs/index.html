@@ -108,7 +108,7 @@ nav.tabs button.on{color:var(--teal-deep)}
 .sheet h2{margin:0}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(90px + env(safe-area-inset-bottom,0px));background:var(--ink);color:#fff;padding:10px 16px;border-radius:12px;z-index:40;font-size:.9rem;max-width:calc(100% - 32px)}
 .setup{min-height:100vh;background:var(--teal);color:#fff;padding:calc(40px + env(safe-area-inset-top,0px)) 20px 40px}
-.setup .card{color:var(--ink)}
+.setup .card,.setup .note{color:var(--ink)}
 .setup h1{margin:0 0 6px;font-size:1.8rem}
 .code{font-size:1.6rem;font-weight:700;letter-spacing:.18em;font-variant-numeric:tabular-nums;user-select:all}
 .mono{font-family:ui-monospace,Menlo,monospace;word-break:break-all;user-select:all;background:var(--bg);padding:8px;border-radius:8px;font-size:.85rem}
@@ -210,6 +210,8 @@ async function localNotify(title, body) {
 
 /* ---------- stats helpers (client side, from server state) ---------- */
 function owner() { return S.state && S.state.me.role === "owner"; }
+const activePartners = () => S.state.members.filter(m => m.role === "partner" && m.status === "active");
+const pendingPartners = () => S.state.members.filter(m => m.role === "partner" && m.status === "pending");
 function periodEnd(p, st) {
   if (p.end_date) return p.end_date;
   if (st.activeId === p.id) { const t = S.state.today; const e = addDays(p.start_date, st.avgLen - 1); return diff(t, e) > 0 ? t : e; }
@@ -295,6 +297,18 @@ function renderPushPrompt() {
   $("#pLater").onclick = () => { S.pushAsked = true; render(); };
 }
 
+function renderPending() {
+  const pv = S.state.partnerView;
+  $("#root").innerHTML = `<div class="setup"><h1>承認を待っています</h1><p>${esc(pv.ownerName)}さんが承認すると使えるようになります。</p>
+  <div style="display:grid;gap:12px"><div id="pushCard"></div>
+    <div class="card" style="display:grid;gap:10px"><p style="margin:0">${esc(pv.ownerName)}さんの携帯に参加リクエストを送りました。承認されると、この携帯に通知が届きます。</p>
+      <button class="btn pri" id="pdRe">状態を確認する</button>
+      <button class="btn sm danger" id="pdLeave">参加をやめる</button></div></div></div>`;
+  pushCard($("#pushCard"));
+  $("#pdRe").onclick = () => refresh();
+  $("#pdLeave").onclick = async e => { const b = e.target; if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当にやめる"; return; } try { await api("leave"); setToken(null); S.state = null; boot(); } catch (er) { toast(er.message); } };
+}
+
 /* ---------- render: main ---------- */
 const ICONS = {
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11l8-7 8 7v9H4z"/></svg>',
@@ -305,6 +319,7 @@ const ICONS = {
 function render() {
   if (!S.state) return;
   if (!S.pushAsked && S.justJoined) { S.justJoined = false; return renderPushPrompt(); }
+  if (S.state.pending) return renderPending();
   const tabs = owner() ? [["home", "ホーム"], ["calendar", "カレンダー"], ["log", "体調記録"], ["settings", "設定"]]
     : [["home", "ホーム"], ["calendar", "カレンダー"], ["settings", "設定"]];
   if (!tabs.some(t => t[0] === S.tab)) S.tab = "home";
@@ -351,8 +366,9 @@ function viewHomeOwner(v) {
     center = `<div class="lab">生理予定日</div><div class="big" style="font-size:1.4rem">まだ<br>わかりません</div><div class="rest small">生理がきたら<br>下のボタンを押してください</div>`;
   }
   const ovNext = st.predictions.find(x => diff(t, x.ovulation) >= 0) || st.predictions[0];
-  const partner = s.members.filter(m => m.role === "partner");
-  const pState = !partner.length ? `<div class="note warn"><b>パートナーがまだ参加していません</b>「設定」の招待コードをパートナーに伝えてください。</div>`
+  const partner = activePartners(), pend = pendingPartners();
+  const pState = pend.length ? `<div class="note warn"><b>参加リクエストが届いています</b>${pend.map(m => esc(m.name)).join("、")}さんが参加を希望しています。「設定」で承認してください。</div>`
+    : !partner.length ? `<div class="note warn"><b>パートナーがまだ参加していません</b>「設定」の招待コードをパートナーに伝えてください。</div>`
     : partner.some(m => m.pushDevices > 0) ? `<p class="small muted" style="margin:0">通知先：${partner.map(m => esc(m.name)).join("、")}（通知オン）${s.settings.notifyPartnerStart ? "" : "・開始時の通知はオフ"}</p>`
     : `<div class="note warn"><b>パートナーの通知がオフです</b>${partner.map(m => esc(m.name)).join("、")}さんのアプリで「通知をオンにする」を押してもらってください。</div>`;
   v.innerHTML = `<section class="hero">${heroHead(t)}
@@ -406,7 +422,7 @@ async function pushCard(el) {
 
 /* ---------- start / end ---------- */
 function startFlow() {
-  const t = S.state.today, s = S.state, hasPartner = s.members.some(m => m.role === "partner");
+  const t = S.state.today, s = S.state, hasPartner = activePartners().length > 0;
   sheet(`<h2>生理がきた</h2>
     <div class="field"><label for="sDate">始まった日</label><input type="date" id="sDate" value="${t}" max="${t}"></div>
     <div class="switch"><label for="sNotify">${hasPartner ? "パートナーに通知する" : "パートナーに通知する（未参加）"}</label><input type="checkbox" id="sNotify" ${hasPartner && s.settings.notifyPartnerStart ? "checked" : ""} ${hasPartner ? "" : "disabled"}></div>
@@ -443,7 +459,7 @@ function startFlow() {
   });
 }
 function endFlow(active) {
-  const t = S.state.today, s = S.state, hasPartner = s.members.some(m => m.role === "partner");
+  const t = S.state.today, s = S.state, hasPartner = activePartners().length > 0;
   sheet(`<h2>生理が終わった</h2>
     <div class="field"><label for="eDate">終わった日</label><input type="date" id="eDate" value="${t}" min="${active.start_date}" max="${t}"></div>
     <p class="small muted" style="margin:0">${fmtY(active.start_date)} に始まった生理の終了日として記録します。</p>
@@ -576,15 +592,17 @@ function editBox(el, p) {
 /* ---------- settings ---------- */
 function sw(id, label, on) { return `<div class="switch"><label for="${id}">${label}</label><input type="checkbox" id="${id}" ${on ? "checked" : ""}></div>`; }
 function viewSettingsOwner(v) {
-  const s = S.state, st = s.settings, partners = s.members.filter(m => m.role === "partner");
+  const s = S.state, st = s.settings, partners = s.members.filter(m => m.role === "partner"), actives = activePartners();
   v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">設定</div><div class="sub">${esc(s.me.name)}さん（記録する人）</div></section>
   <div class="wrap">
     <div id="pushCard"></div>
     <div class="card" style="display:grid;gap:8px"><h2 style="margin:0">パートナー</h2>
-      <p class="small muted" style="margin:0">パートナーにこのアプリを入れてもらい、「パートナーとして参加」でこのコードを入力してもらいます。</p>
+      <p class="small muted" style="margin:0">パートナーにこのアプリを入れてもらい、「パートナーとして参加」でこのコードを入力してもらいます。コードは1回使うと新しいコードに変わり、参加はあなたの承認が必要です。</p>
       <div class="row between"><span class="code">${esc(s.inviteCode)}</span><div class="row"><button class="btn sm" id="cCopy">コピー</button><button class="btn sm" id="cRegen">作り直す</button></div></div>
-      <div class="list">${partners.length ? partners.map(m => `<div class="it"><div><b>${esc(m.name)}</b><div class="small muted">${m.pushDevices ? `通知オン（${m.pushDevices}台）` : "通知オフ"}</div></div><button class="btn sm danger" data-rm="${m.id}">外す</button></div>`).join("") : `<p class="small muted" style="margin:0">まだ参加していません。</p>`}</div>
-      <button class="btn sm" id="tPartner" ${partners.length ? "" : "disabled"}>パートナーにテスト通知を送る</button><div id="tpOut"></div>
+      <div class="list">${partners.length ? partners.map(m => m.status === "pending"
+        ? `<div class="it"><div><b>${esc(m.name)}</b><div class="small" style="color:var(--warn)">承認待ち（参加リクエスト）</div></div><div class="row"><button class="btn sm pri" data-ap="${m.id}">承認</button><button class="btn sm danger" data-rm="${m.id}">断る</button></div></div>`
+        : `<div class="it"><div><b>${esc(m.name)}</b><div class="small muted">${m.pushDevices ? `通知オン（${m.pushDevices}台）` : "通知オフ"}</div></div><button class="btn sm danger" data-rm="${m.id}">外す</button></div>`).join("") : `<p class="small muted" style="margin:0">まだ参加していません。</p>`}</div>
+      <button class="btn sm" id="tPartner" ${actives.length ? "" : "disabled"}>パートナーにテスト通知を送る</button><div id="tpOut"></div>
     </div>
     <form class="card" id="nf" style="display:grid;gap:2px"><h2>通知</h2>
       ${sw("nStart", "「生理がきた」でパートナーに通知", st.notifyPartnerStart)}
@@ -593,7 +611,8 @@ function viewSettingsOwner(v) {
       ${sw("nSelfDay", "予定日の当日に自分へお知らせ", st.remindSelfDay)}
       ${sw("nPartner3", "予定日の3日前にパートナーへお知らせ", st.remindPartner3)}
       ${sw("nShare", "パートナーの画面に予定日を表示する", st.sharePrediction)}
-      <p class="small muted" style="margin:4px 0 0">予定日のお知らせは毎朝8時ごろに届きます。</p>
+      ${sw("nDiscreet", "目立たない通知にする（ロック画面に内容を出さない）", st.discreetPush)}
+      <p class="small muted" style="margin:4px 0 0">予定日のお知らせは毎朝8時ごろに届きます。目立たない通知をオンにすると、2人とも「新しいお知らせがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
     </form>
     <form class="card" id="cf" style="display:grid;gap:8px"><h2 style="margin:0">予測の初期値</h2>
       <p class="small muted" style="margin:0">記録が2回以上たまると、実際の記録から自動で計算します。</p>
@@ -611,9 +630,10 @@ function viewSettingsOwner(v) {
   pushCard($("#pushCard"));
   $("#cCopy").onclick = () => copy(s.inviteCode);
   $("#cRegen").onclick = async () => { try { await api("regen_invite"); toast("新しいコードにしました"); render(); } catch (er) { toast(er.message); } };
-  v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に外す"; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
+  v.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await api("approve_member", { id: b.dataset.ap }); toast("承認しました"); render(); } catch (er) { toast(er.message); b.disabled = false; } });
+  v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に" + b.textContent; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
   $("#tPartner").onclick = async e => { e.target.disabled = true; try { const r = await api("test_partner"); $("#tpOut").innerHTML = `<div class="note ${r.result.delivered ? "ok" : "warn"}">${r.result.delivered ? `パートナーの携帯${r.result.delivered}台に送りました。届いたか確認してもらってください。` : "届けられる携帯がありません。パートナーのアプリで通知をオンにしてもらってください。"}</div>`; } catch (er) { toast(er.message); } e.target.disabled = false; };
-  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction" };
+  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush" };
   Object.entries(map).forEach(([id, k]) => $("#" + id).onchange = async e => { try { await api("settings_save", { settings: { [k]: e.target.checked } }); toast("保存しました"); } catch (er) { toast(er.message); e.target.checked = !e.target.checked; } });
   $("#cf").onsubmit = async e => { e.preventDefault(); try { await api("settings_save", { settings: { defCycle: $("#dC").value, defLen: $("#dL").value } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   bindAccount(v);
