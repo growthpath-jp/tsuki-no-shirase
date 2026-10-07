@@ -201,7 +201,7 @@ async function buildState(me: Member) {
       next: pair.settings.sharePrediction ? stats.next : null,
       predictions: pair.settings.sharePrediction ? stats.predictions.slice(0, 4) : [],
       sharePrediction: pair.settings.sharePrediction,
-      pmsDays: pair.settings.sharePrediction ? pair.settings.pmsDays : null,
+      pmsDays: pair.settings.sharePrediction && pair.settings.pmsNotify ? pair.settings.pmsDays : null,
     },
     notices: (notices ?? []).filter((n) => n.target === "partner" || n.target === "all"),
   };
@@ -396,17 +396,21 @@ Deno.serve(async (req) => {
         return json({ ok: true, state: await buildState(me) });
       }
       case "settings_save": {
-        const pair = await loadPair(me.pair_id);
-        const s = { ...pair.settings };
+        // build a patch of only the changed (and valid) keys, then merge it atomically in the database,
+        // so two saves at the same moment never wipe each other's changes
+        const patch: Record<string, unknown> = {};
         for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof typeof DEFAULT_SETTINGS)[]) {
           if (!(k in (body.settings ?? {}))) continue;
           const v = body.settings[k];
-          if (k === "defCycle") { const n = Number(v); if (n >= 15 && n <= 60) s.defCycle = n; }
-          else if (k === "defLen") { const n = Number(v); if (n >= 1 && n <= 14) s.defLen = n; }
-          else if (k === "pmsDays") { const n = Number(v); if (Number.isInteger(n) && n >= 1 && n <= 10) s.pmsDays = n; }
-          else (s as Record<string, unknown>)[k] = !!v;
+          if (k === "defCycle") { const n = Number(v); if (n >= 15 && n <= 60) patch.defCycle = n; }
+          else if (k === "defLen") { const n = Number(v); if (n >= 1 && n <= 14) patch.defLen = n; }
+          else if (k === "pmsDays") { const n = Number(v); if (Number.isInteger(n) && n >= 1 && n <= 10) patch.pmsDays = n; }
+          else patch[k] = !!v;
         }
-        await sb.from("pairs").update({ settings: s }).eq("id", me.pair_id);
+        if (Object.keys(patch).length) {
+          const { error } = await sb.rpc("merge_settings", { p_pair: me.pair_id, p_patch: patch });
+          if (error) throw error;
+        }
         return json({ ok: true, state: await buildState(me) });
       }
       case "test_partner": {
