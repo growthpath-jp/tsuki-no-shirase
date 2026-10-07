@@ -136,6 +136,17 @@ async function auth(req: Request): Promise<Member> {
   if (!data) throw new ApiError("unauthorized", "この端末の登録が見つかりません。引き継ぎコードで復元するか、最初から登録してください。", 401);
   return data as Member;
 }
+// rate limit for the public entry points: max N attempts per hour per network (IP is stored only as a hash)
+async function limit(req: Request, action: string, max = 5) {
+  const ip = (req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown").split(",")[0].trim();
+  const key = action + ":" + (await sha256("tsuki:" + ip));
+  const since = new Date(Date.now() - 3600e3).toISOString();
+  // record first, then count (so simultaneous requests cannot all slip through)
+  await sb.from("rate_hits").insert({ key });
+  const { count } = await sb.from("rate_hits").select("id", { count: "exact", head: true }).eq("key", key).gte("at", since);
+  if ((count ?? 0) > max)
+    throw new ApiError("rate_limited", "短い時間に何度も試されたため、一時的に止めています。1時間ほど待ってからもう一度お試しください。", 429);
+}
 const ownerOnly = (m: Member) => { if (m.role !== "owner") throw new ApiError("forbidden", "記録する人だけが使える操作です。", 403); };
 
 async function loadPair(pairId: string) {
@@ -191,6 +202,7 @@ async function buildState(me: Member) {
 /* ---------------- cron (daily reminders = substitute for local notifications) ---------------- */
 async function runCron() {
   const today = todayJST();
+  await sb.from("rate_hits").delete().lt("at", new Date(Date.now() - 864e5).toISOString()); // cleanup
   const { data: pairs } = await sb.from("pairs").select("id,settings");
   const out: unknown[] = [];
   for (const p of pairs ?? []) {
@@ -236,6 +248,7 @@ Deno.serve(async (req) => {
         return json({ ok: true, ...(await runCron()) });
       }
       case "setup_owner": {
+        await limit(req, "setup_owner");
         const name = String(body.name || "").trim().slice(0, 20);
         if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
         let pair = null;
@@ -249,6 +262,7 @@ Deno.serve(async (req) => {
         return json({ ok: true, token });
       }
       case "join": {
+        await limit(req, "join");
         const code = String(body.code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
         const name = String(body.name || "").trim().slice(0, 20);
         if (!name) throw new ApiError("bad_request", "呼び名を入力してください。");
