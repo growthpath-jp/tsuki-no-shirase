@@ -211,7 +211,8 @@ async function localNotify(title, body) {
 
 /* cute devil mark for the first day of the PMS window */
 const DEVIL = '<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M9 14 L5 3 L15 10Z" fill="#8e5bd6"/><path d="M31 14 L35 3 L25 10Z" fill="#8e5bd6"/><circle cx="20" cy="22" r="14" fill="#b58cf0"/><circle cx="20" cy="22" r="14" fill="none" stroke="#7a49c7" stroke-width="1.5"/><path d="M12.5 20 q2.5 -3 5 0" stroke="#3b2266" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M22.5 20 q2.5 -3 5 0" stroke="#3b2266" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M14 26 q6 6 12 0" stroke="#3b2266" stroke-width="2" fill="#fff" stroke-linecap="round"/><circle cx="11.5" cy="25" r="2.2" fill="#f2797b" opacity=".7"/><circle cx="28.5" cy="25" r="2.2" fill="#f2797b" opacity=".7"/></svg>';
-const pmsOn = () => owner() ? S.state.settings.pmsNotify !== false : !!(S.state.partnerView && S.state.partnerView.pmsDays);
+// the recorder always sees the PMS start on her own screen; the partner only when notifications to the partner are on
+const pmsOn = () => owner() ? true : !!(S.state.partnerView && S.state.partnerView.pmsDays);
 const pmsDays = () => { const v = owner() ? S.state.settings.pmsDays : S.state.partnerView && S.state.partnerView.pmsDays; return Math.min(10, Math.max(1, Number(v) || 10)); };
 
 /* ---------- stats helpers (client side, from server state) ---------- */
@@ -626,7 +627,7 @@ function viewSettingsOwner(v) {
       ${sw("nPms", "PMS期間の始まりをパートナーに知らせる", st.pmsNotify)}
       <div class="switch" id="pmsDaysRow" ${st.pmsNotify ? "" : "hidden"}><label for="nPmsDays">PMS期間の始まり（生理予定日の何日前か）</label>
         <select id="nPmsDays" style="width:auto;min-height:40px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff;font-size:16px">${Array.from({ length: 10 }, (_, i) => 10 - i).map(n => `<option value="${n}" ${Number(st.pmsDays || 10) === n ? "selected" : ""}>${n}日前</option>`).join("")}</select></div>
-      <p class="small muted" style="margin:4px 0 0">予定日やPMS期間のお知らせは毎朝8時ごろに届きます。PMS期間のお知らせをオンにすると、カレンダーのその日に悪魔マークが付きます。目立たない通知をオンにすると、2人とも「お知らせ／新しいメッセージがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
+      <p class="small muted" style="margin:4px 0 0">予定日やPMS期間のお知らせは毎朝8時ごろに届きます。カレンダーでは、PMS期間の始まりの日に悪魔マークが付きます（パートナーへの通知をオフにしても、自分の画面には表示されます）。目立たない通知をオンにすると、2人とも「お知らせ／新しいメッセージがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
     </form>
     <form class="card" id="cf" style="display:grid;gap:8px"><h2 style="margin:0">予測の初期値</h2>
       <p class="small muted" style="margin:0">記録が2回以上たまると、実際の記録から自動で計算します。</p>
