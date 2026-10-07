@@ -141,9 +141,10 @@ async function limit(req: Request, action: string, max = 5) {
   const ip = (req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown").split(",")[0].trim();
   const key = action + ":" + (await sha256("tsuki:" + ip));
   const since = new Date(Date.now() - 3600e3).toISOString();
-  // record first, then count (so simultaneous requests cannot all slip through)
-  await sb.from("rate_hits").insert({ key });
-  const { count } = await sb.from("rate_hits").select("id", { count: "exact", head: true }).eq("key", key).gte("at", since);
+  // record first, then count only the attempts recorded up to and including this one (ordered by id),
+  // so in a burst exactly the first `max` pass and the rest are refused
+  const { data: hit } = await sb.from("rate_hits").insert({ key }).select("id").single();
+  const { count } = await sb.from("rate_hits").select("id", { count: "exact", head: true }).eq("key", key).gte("at", since).lte("id", hit?.id ?? 0);
   if ((count ?? 0) > max)
     throw new ApiError("rate_limited", "短い時間に何度も試されたため、一時的に止めています。1時間ほど待ってからもう一度お試しください。", 429);
 }
