@@ -84,6 +84,7 @@ const DEFAULT_SETTINGS = {
   notifyPartnerStart: true, notifyPartnerEnd: false,
   remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false, discreetPush: false,
   pmsNotify: true, pmsDays: 10,
+  showOvuList: true, showPmsList: true, // lines in 「今後の生理予定日」 on the recorder's home
 };
 type Period = { id: string; start_date: string; end_date: string | null };
 

@@ -85,18 +85,25 @@ textarea{min-height:90px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 /* calendar */
 .calhead{display:flex;justify-content:space-between;align-items:center}
-.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-top:8px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));column-gap:0;row-gap:6px;margin-top:8px}
 .dow{text-align:center;font-size:.75rem;color:var(--muted)}
 .dow:first-child{color:var(--err)} .dow:last-child{color:#3a7bd5}
-.cd{position:relative;aspect-ratio:1/1;border:0;background:none;border-radius:12px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+.cd{position:relative;isolation:isolate;aspect-ratio:1/1;border:0;background:none;border-radius:12px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;color:inherit}
+.cd .n{position:static}
 .cd.out{opacity:.35}
 .cd.p{background:var(--coral);color:#fff}
-.cd.pp{background:var(--coral-soft);color:var(--coral-deep);box-shadow:inset 0 0 0 2px var(--coral)}
-.cd.f{background:var(--teal-soft)}
-.cd.o{background:var(--teal);color:#fff}
-.cd.t{box-shadow:inset 0 0 0 2px var(--ink)}
-.cd.sel{outline:3px solid rgba(92,186,183,.6)}
-.cd .mk{position:absolute;top:-3px;left:50%;transform:translateX(-50%);font-size:.58rem;line-height:1;padding:2px 4px;border-radius:6px;background:var(--ink);color:#fff;white-space:nowrap;font-weight:700}
+.cd.pp{background:var(--coral-soft);color:var(--coral-deep);--bc:var(--coral);box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc),inset 2px 0 0 var(--bc),inset -2px 0 0 var(--bc)}
+.cd.pp.jl{box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc),inset -2px 0 0 var(--bc)}
+.cd.pp.jr{box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc),inset 2px 0 0 var(--bc)}
+.cd.pp.jl.jr{box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc)}
+.cd.f,.cd.o{background:var(--teal-soft)}
+.cd.o{color:#fff}
+.cd.o::before{content:"";position:absolute;inset:12%;border-radius:50%;background:var(--teal);z-index:-1}
+.cd.jl{border-top-left-radius:0;border-bottom-left-radius:0}
+.cd.jr{border-top-right-radius:0;border-bottom-right-radius:0}
+.cd.t::after{content:"";position:absolute;inset:3px;border-radius:10px;box-shadow:inset 0 0 0 2px var(--ink);pointer-events:none}
+.cd.sel{outline:3px solid rgba(92,186,183,.6);outline-offset:-3px;z-index:1}
+.cd .mk{position:absolute;z-index:2;top:-3px;left:50%;transform:translateX(-50%);font-size:.58rem;line-height:1;padding:2px 4px;border-radius:6px;background:var(--ink);color:#fff;white-space:nowrap;font-weight:700}
 .cd .mk.s{background:var(--coral-deep)} .cd .mk.e{background:#7a5a5c}
 .cd .devil{position:absolute;top:-6px;right:-4px;width:20px;height:20px;pointer-events:none}
 .cd .dot{position:absolute;bottom:4px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:currentColor;opacity:.7}
@@ -124,6 +131,7 @@ nav.tabs button.on{color:var(--teal-deep)}
 #root,#ovRoot,#toastRoot{word-break:keep-all;overflow-wrap:anywhere;line-break:strict}
 h1,h2,label,button,.switch label,.note b,.lab2,.stat span,.list .it b,.hero .sub,.lab,.rest{text-wrap:balance}
 p,.note,.small{text-wrap:pretty}
+.nw{white-space:nowrap}
 </style>
 </head>
 <body>
@@ -481,7 +489,7 @@ function viewHomeOwner(v) {
       <div class="stat"><b>${st.avgCycle}日</b><span>平均周期${st.cycleSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${st.avgLen}日</b><span>平均の生理日数${st.lenSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${s.periods.length}回</b><span>記録した回数</span></div></div></div>
-    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}まで<br>排卵日の目安 ${fmt(x.ovulation)}${pmsOn() ? `<br>PMS期間の始まり ${fmt(addDays(x.start, -pmsDays()))}` : ""}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
+    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}まで${s.settings.showOvuList !== false ? `<br>排卵日の目安 ${fmt(x.ovulation)}` : ""}${pmsOn() && s.settings.showPmsList !== false ? `<br>PMS期間の始まり ${fmt(addDays(x.start, -pmsDays()))}` : ""}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
       <p class="small muted" style="margin:8px 0 0">予定日・排卵日は過去の周期からの目安です。避妊や妊娠の判断には使わないでください。</p></div>
   </div>`;
   const a = $("#bStart"); a && (a.onclick = startFlow);
@@ -507,7 +515,9 @@ function viewHomePartner(v) {
 }
 function noticeRow(n) {
   const d = new Date(n.created_at);
-  return `<div class="it"><div><b>${esc(n.title)}</b><div class="small muted">${esc(n.body || "")}</div></div><span class="small muted">${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}</span></div>`;
+  const title = esc(n.title).replace(/の気分がゆらぎやすい時期に入りました$/, 'の気分が<br><span class="nw">ゆらぎやすい時期に入りました</span>');
+  // date/time sits above the title so the title and text get the full width of the card
+  return `<div class="it"><div style="grid-column:1/-1"><div class="small muted">${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}</div><b>${title}</b><div class="small muted">${esc(n.body || "")}</div></div></div>`;
 }
 async function pushCard(el) {
   const ps = await pushStatus();
@@ -592,6 +602,7 @@ function viewCalendar(v) {
   const isOwner = owner();
   const first = Date.UTC(S.calY, S.calM, 1), startW = new Date(first).getUTCDay();
   let cells = [..."日月火水木金土"].map(d => `<div class="dow">${d}</div>`).join("");
+  const items = [];
   for (let i = 0; i < 42; i++) {
     const ms = first + (i - startW) * 864e5, d = toStr(ms), inM = new Date(ms).getUTCMonth() === S.calM;
     if (i >= 35 && !inM && i % 7 === 0) break;
@@ -611,8 +622,15 @@ function viewCalendar(v) {
       if (pv.pmsDays) for (const x of pv.predictions || []) if (addDays(x.start, -pmsDays()) === d) dot += `<span class="devil" title="PMS期間の始まり（目安）">${DEVIL}</span>`;
     }
     if (d === t) cls.push("t"); if (d === S.sel) cls.push("sel");
-    cells += `<button class="${cls.join(" ")}" data-d="${d}" aria-label="${fmtY(d)}">${mk}${+d.slice(8)}${dot}</button>`;
+    items.push({ i, d, cls, mk, dot, g: cls.includes("p") ? "p" : cls.includes("pp") ? "pp" : (cls.includes("f") || cls.includes("o")) ? "f" : "" });
   }
+  // days of the same kind next to each other in a week are drawn as one band (rounded only at its ends)
+  items.forEach((it, k) => {
+    if (!it.g) return;
+    if (it.i % 7 && items[k - 1] && items[k - 1].g === it.g) it.cls.push("jl");
+    if (it.i % 7 !== 6 && items[k + 1] && items[k + 1].g === it.g) it.cls.push("jr");
+  });
+  for (const it of items) cells += `<button class="${it.cls.join(" ")}" data-d="${it.d}" aria-label="${fmtY(it.d)}"><span class="n">${it.mk}${+it.d.slice(8)}${it.dot}</span></button>`;
   v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">${S.calY}年${S.calM + 1}月</div><div class="sub">カレンダー</div></section>
   <div class="wrap"><div class="card">
     <div class="calhead"><button class="btn sm" id="cPrev">‹ 前月</button><button class="btn sm" id="cToday">今日</button><button class="btn sm" id="cNext">次月 ›</button></div>
@@ -720,6 +738,11 @@ function viewSettingsOwner(v) {
         <select id="nPmsDays" style="width:auto;min-height:40px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff;font-size:16px">${Array.from({ length: 10 }, (_, i) => 10 - i).map(n => `<option value="${n}" ${Number(st.pmsDays || 10) === n ? "selected" : ""}>${n}日前</option>`).join("")}</select></div>
       <p class="small muted" style="margin:4px 0 0">予定日やPMS期間のお知らせは毎朝8時ごろに届きます。カレンダーでは、PMS期間の始まりの日に悪魔マークが付きます（パートナーへの通知をオフにしても、自分の画面には表示されます）。目立たない通知をオンにすると、2人とも「お知らせ／新しいメッセージがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
     </form>
+    <form class="card" id="hf" style="display:grid;gap:2px"><h2>ホームの表示</h2>
+      <p class="small muted" style="margin:0 0 4px">「今後の生理予定日」に出す内容です。</p>
+      ${sw("hOvu", "排卵日の目安を表示する", st.showOvuList !== false)}
+      ${sw("hPms", "PMS期間の始まりを表示する", st.showPmsList !== false)}
+    </form>
     <form class="card" id="cf" style="display:grid;gap:8px"><h2 style="margin:0">予測の初期値</h2>
       <p class="small muted" style="margin:0">記録が2回以上たまると、実際の記録から自動で計算します。</p>
       <div class="two"><div class="field"><label for="dC">周期（日）</label><input type="number" id="dC" min="15" max="60" value="${st.defCycle}"></div>
@@ -739,7 +762,7 @@ function viewSettingsOwner(v) {
   v.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await api("approve_member", { id: b.dataset.ap }); toast("承認しました"); render(); } catch (er) { toast(er.message); b.disabled = false; } });
   v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に" + b.textContent; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
   $("#tPartner").onclick = async e => { e.target.disabled = true; try { const r = await api("test_partner"); $("#tpOut").innerHTML = `<div class="note ${r.result.delivered ? "ok" : "warn"}">${r.result.delivered ? `パートナーの携帯${r.result.delivered}台に送りました。届いたか確認してもらってください。` : "届けられる携帯がありません。パートナーのアプリで通知をオンにしてもらってください。"}</div>`; } catch (er) { toast(er.message); } e.target.disabled = false; };
-  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush", nPms: "pmsNotify" };
+  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush", nPms: "pmsNotify", hOvu: "showOvuList", hPms: "showPmsList" };
   Object.entries(map).forEach(([id, k]) => $("#" + id).onchange = async e => { try { await api("settings_save", { settings: { [k]: e.target.checked } }); toast("保存しました"); if (id === "nPms") $("#pmsDaysRow").hidden = !e.target.checked; } catch (er) { toast(er.message); e.target.checked = !e.target.checked; } });
   $("#nPmsDays").onchange = async e => { try { await api("settings_save", { settings: { pmsDays: Number(e.target.value) } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   $("#cf").onsubmit = async e => { e.preventDefault(); try { await api("settings_save", { settings: { defCycle: $("#dC").value, defLen: $("#dL").value } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
