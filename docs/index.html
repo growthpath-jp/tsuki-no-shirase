@@ -624,7 +624,7 @@ function dayCard(el) {
 }
 
 /* ---------- log ---------- */
-const FLOWS = ["なし", "少ない", "普通", "多い"], SYMS = ["腹痛", "腰痛", "頭痛", "胸の張り", "むくみ", "肌荒れ", "眠気", "だるさ", "吐き気", "食欲増加", "イライラ", "不眠"], MOODS = ["良い", "普通", "イライラ", "落ち込み", "不安"];
+const FLOWS = ["なし", "少ない", "普通", "多い"], SYMS = ["腹痛", "腰痛", "頭痛", "胸の張り", "むくみ", "肌荒れ", "眠気", "だるさ", "吐き気", "食欲増加", "イライラ", "不眠"], MOODS = ["良い", "普通", "イライラ", "もやもや", "落ち込み", "悲しい", "不安"];
 const chips = (name, arr, type, sel) => arr.map((x, i) => `<label class="chip"><input type="${type}" name="${name}" id="${name}${i}" value="${x}" ${sel(x) ? "checked" : ""}><span>${x}</span></label>`).join("");
 function viewLog(v) {
   const s = S.state, t = s.today; const d = S.logDate || t; const l = s.days.find(x => x.date === d) || {};
