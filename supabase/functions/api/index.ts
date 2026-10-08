@@ -85,6 +85,8 @@ const DEFAULT_SETTINGS = {
   remindSelf3: true, remindSelfDay: true, remindPartner3: false, sharePrediction: false, discreetPush: false,
   pmsNotify: true, pmsDays: 10,
   showOvuList: true, showPmsList: true, // lines in 「今後の生理予定日」 on the recorder's home
+  shareDays: false, shareMemo: false, // show the 体調記録 to the partner (memo separately)
+  otherWords: [] as string[], // the recorder's own words for 体調記録「その他」
 };
 type Period = { id: string; start_date: string; end_date: string | null };
 
@@ -188,7 +190,7 @@ async function buildState(me: Member) {
   const { data: notices } = await sb.from("notices").select("kind,target,title,body,delivered,failed,created_at")
     .eq("pair_id", me.pair_id).order("created_at", { ascending: false }).limit(30);
   if (me.role === "owner") {
-    const { data: days } = await sb.from("days").select("date,flow,symptoms,mood,memo").eq("pair_id", me.pair_id).order("date");
+    const { data: days } = await sb.from("days").select("date,flow,symptoms,mood,others,memo").eq("pair_id", me.pair_id).order("date");
     return { today, me, inviteCode: pair.invite_code, settings: pair.settings, members, periods, days: days ?? [], stats, notices: notices ?? [] };
   }
   // partner: minimal view
@@ -196,8 +198,13 @@ async function buildState(me: Member) {
     return { today, me, members: members.filter((m) => m.me), pending: true, partnerView: { ownerName: await ownerName(me.pair_id), activeSince: null, next: null, predictions: [], sharePrediction: false }, notices: [] };
   }
   const active = stats.activeId ? periods.find((p) => p.id === stats.activeId) : null;
+  let days: unknown[] | null = null;
+  if (pair.settings.shareDays) { // the last ~4 months of 体調記録, memo only when allowed
+    const { data } = await sb.from("days").select("date,flow,symptoms,mood,others,memo").eq("pair_id", me.pair_id).gte("date", addDays(today, -120)).order("date");
+    days = (data ?? []).map((d) => (pair.settings.shareMemo ? d : { ...d, memo: "" }));
+  }
   return {
-    today, me, members,
+    today, me, members, days,
     partnerView: {
       ownerName: await ownerName(me.pair_id),
       activeSince: active?.start_date ?? null,
@@ -395,8 +402,9 @@ Deno.serve(async (req) => {
         if (!isDate(body.date)) throw new ApiError("bad_request", "日付が不正です。");
         const row = {
           pair_id: me.pair_id, date: body.date,
-          flow: body.flow || null, mood: body.mood || null,
+          flow: body.flow || null, mood: body.mood ? String(body.mood).slice(0, 200) : null,
           symptoms: Array.isArray(body.symptoms) ? body.symptoms.map(String).slice(0, 20) : [],
+          others: Array.isArray(body.others) ? body.others.map((x: unknown) => String(x).slice(0, 30)).slice(0, 30) : [],
           memo: String(body.memo || "").slice(0, 1000), updated_at: new Date().toISOString(),
         };
         await sb.from("days").upsert(row, { onConflict: "pair_id,date" });
@@ -416,6 +424,9 @@ Deno.serve(async (req) => {
           if (k === "defCycle") { const n = Number(v); if (n >= 15 && n <= 60) patch.defCycle = n; }
           else if (k === "defLen") { const n = Number(v); if (n >= 1 && n <= 14) patch.defLen = n; }
           else if (k === "pmsDays") { const n = Number(v); if (Number.isInteger(n) && n >= 1 && n <= 10) patch.pmsDays = n; }
+          else if (k === "otherWords") {
+            if (Array.isArray(v)) patch.otherWords = [...new Set(v.map((x: unknown) => String(x).trim().slice(0, 20)).filter(Boolean))].slice(0, 30);
+          }
           else patch[k] = !!v;
         }
         if (Object.keys(patch).length) {
@@ -458,7 +469,7 @@ Deno.serve(async (req) => {
         for (const d of ds) {
           if (!isDate(d.date)) continue;
           await sb.from("days").upsert({ pair_id: me.pair_id, date: d.date, flow: d.flow || null, mood: d.mood || null,
-            symptoms: Array.isArray(d.symptoms) ? d.symptoms : [], memo: d.memo || "" }, { onConflict: "pair_id,date" });
+            symptoms: Array.isArray(d.symptoms) ? d.symptoms : [], others: Array.isArray(d.others) ? d.others : [], memo: d.memo || "" }, { onConflict: "pair_id,date" });
           n++;
         }
         return json({ ok: true, imported: n, state: await buildState(me) });

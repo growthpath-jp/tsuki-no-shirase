@@ -88,8 +88,8 @@ textarea{min-height:90px}
 .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));column-gap:0;row-gap:6px;margin-top:8px}
 .dow{text-align:center;font-size:.75rem;color:var(--muted)}
 .dow:first-child{color:var(--err)} .dow:last-child{color:#3a7bd5}
-.cd{position:relative;isolation:isolate;aspect-ratio:1/1;border:0;background:none;border-radius:12px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;color:inherit}
-.cd .n{position:static}
+.cd{position:relative;aspect-ratio:1/1;border:0;background:none;border-radius:12px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;color:inherit}
+.cd .n{position:relative;z-index:1}
 .cd.out{opacity:.35}
 .cd.p{background:var(--coral);color:#fff}
 .cd.pp{background:var(--coral-soft);color:var(--coral-deep);--bc:var(--coral);box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc),inset 2px 0 0 var(--bc),inset -2px 0 0 var(--bc)}
@@ -98,15 +98,15 @@ textarea{min-height:90px}
 .cd.pp.jl.jr{box-shadow:inset 0 2px 0 var(--bc),inset 0 -2px 0 var(--bc)}
 .cd.f,.cd.o{background:var(--teal-soft)}
 .cd.o{color:#fff}
-.cd.o::before{content:"";position:absolute;inset:12%;border-radius:50%;background:var(--teal);z-index:-1}
+.cd.o::before{content:"";position:absolute;inset:12%;border-radius:50%;background:var(--teal);z-index:0}
 .cd.jl{border-top-left-radius:0;border-bottom-left-radius:0}
 .cd.jr{border-top-right-radius:0;border-bottom-right-radius:0}
 .cd.t::after{content:"";position:absolute;inset:3px;border-radius:10px;box-shadow:inset 0 0 0 2px var(--ink);pointer-events:none}
-.cd.sel{outline:3px solid rgba(92,186,183,.6);outline-offset:-3px;z-index:1}
+.cd.sel{outline:3px solid rgba(92,186,183,.6)}
 .cd .mk{position:absolute;z-index:2;top:-3px;left:50%;transform:translateX(-50%);font-size:.58rem;line-height:1;padding:2px 4px;border-radius:6px;background:var(--ink);color:#fff;white-space:nowrap;font-weight:700}
 .cd .mk.s{background:var(--coral-deep)} .cd .mk.e{background:#7a5a5c}
-.cd .devil{position:absolute;top:-6px;right:-4px;width:20px;height:20px;pointer-events:none}
-.cd .dot{position:absolute;bottom:4px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:currentColor;opacity:.7}
+.cd .devil{position:absolute;top:-6px;right:-4px;width:20px;height:20px;pointer-events:none;z-index:3}
+.cd .dot{position:absolute;z-index:2;bottom:4px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:currentColor;opacity:.7}
 .legend{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:.75rem;color:var(--muted);margin-top:10px}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-2px;margin-right:4px}
 /* tabs */
@@ -132,6 +132,8 @@ nav.tabs button.on{color:var(--teal-deep)}
 h1,h2,label,button,.switch label,.note b,.lab2,.stat span,.list .it b,.hero .sub,.lab,.rest{text-wrap:balance}
 p,.note,.small{text-wrap:pretty}
 .nw{white-space:nowrap}
+.chip-add{border:1px dashed var(--teal);background:none;color:var(--teal-deep);border-radius:999px;padding:6px 12px;font-weight:600;font-size:.9rem}
+.chip .x{border:0;background:none;color:var(--muted);margin-left:6px;padding:0 2px;font-size:1rem;line-height:1;cursor:pointer}
 </style>
 </head>
 <body>
@@ -611,14 +613,14 @@ function viewCalendar(v) {
     if (isOwner) {
       const r = dayInfo(d);
       if (r.p) cls.push("p"); else if (r.pp) cls.push("pp"); else if (r.o) cls.push("o"); else if (r.f) cls.push("f");
-      if (r.start) mk = `<span class="mk s">開始</span>`; else if (r.end) mk = `<span class="mk e">終了</span>`;
+      if (r.end) mk = `<span class="mk e">終了</span>`;
       if (s.days.some(x => x.date === d)) dot = `<span class="dot"></span>`;
       if (r.pms) dot += `<span class="devil" title="PMS期間の始まり（目安）">${DEVIL}</span>`;
     } else {
       const pv = s.partnerView;
       if (pv.activeSince && diff(pv.activeSince, d) >= 0 && diff(d, t) >= 0) cls.push("p");
-      if (pv.activeSince === d) mk = `<span class="mk s">開始</span>`;
       for (const x of pv.predictions || []) if (diff(x.start, d) >= 0 && diff(d, x.end) >= 0 && !cls.includes("p")) cls.push("pp");
+      if ((s.days || []).some(x => x.date === d)) dot = `<span class="dot"></span>`;
       if (pv.pmsDays) for (const x of pv.predictions || []) if (addDays(x.start, -pmsDays()) === d) dot += `<span class="devil" title="PMS期間の始まり（目安）">${DEVIL}</span>`;
     }
     if (d === t) cls.push("t"); if (d === S.sel) cls.push("sel");
@@ -630,14 +632,14 @@ function viewCalendar(v) {
     if (it.i % 7 && items[k - 1] && items[k - 1].g === it.g) it.cls.push("jl");
     if (it.i % 7 !== 6 && items[k + 1] && items[k + 1].g === it.g) it.cls.push("jr");
   });
-  for (const it of items) cells += `<button class="${it.cls.join(" ")}" data-d="${it.d}" aria-label="${fmtY(it.d)}"><span class="n">${it.mk}${+it.d.slice(8)}${it.dot}</span></button>`;
+  for (const it of items) cells += `<button class="${it.cls.join(" ")}" data-d="${it.d}" aria-label="${fmtY(it.d)}"><span class="n">${+it.d.slice(8)}</span>${it.mk}${it.dot}</button>`;
   v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">${S.calY}年${S.calM + 1}月</div><div class="sub">カレンダー</div></section>
   <div class="wrap"><div class="card">
     <div class="calhead"><button class="btn sm" id="cPrev">‹ 前月</button><button class="btn sm" id="cToday">今日</button><button class="btn sm" id="cNext">次月 ›</button></div>
     <div class="cal">${cells}</div>
     <div class="legend"><span><i style="background:var(--coral)"></i>生理</span><span><i style="background:var(--coral-soft);box-shadow:inset 0 0 0 2px var(--coral)"></i>生理予定</span>
       ${isOwner ? `<span><i style="background:var(--teal-soft)"></i>妊娠しやすい期間（目安）</span><span><i style="background:var(--teal)"></i>排卵日（目安）</span>` : ""}
-      <span><i style="background:var(--coral-deep)"></i>開始・終了のマーク</span>
+      ${isOwner ? `<span><i style="background:#7a5a5c"></i>終了のマーク</span>` : ""}
       ${pmsOn() ? `<span><span style="display:inline-block;width:16px;height:16px;vertical-align:-3px;margin-right:4px">${DEVIL}</span>PMS期間の始まり（目安）</span>` : ""}</div>
   </div><div class="card" id="dayCard"></div></div>`;
   $("#cPrev").onclick = () => { if (--S.calM < 0) { S.calM = 11; S.calY--; } render(); };
@@ -646,19 +648,26 @@ function viewCalendar(v) {
   v.querySelectorAll(".cd").forEach(b => b.onclick = () => { S.sel = b.dataset.d; const d = S.sel; S.calY = +d.slice(0, 4); S.calM = +d.slice(5, 7) - 1; render(); });
   dayCard($("#dayCard"));
 }
+const dayText = l => `<p class="small" style="margin:0">${[l.flow && "経血量：" + esc(l.flow), (l.symptoms || []).length && "症状：" + esc(l.symptoms.join("・")), l.mood && "気分：" + esc(l.mood), (l.others || []).length && "その他：" + esc(l.others.join("・")), l.memo && "メモ：" + esc(l.memo)].filter(Boolean).join("<br>")}</p>`;
 function dayCard(el) {
   const d = S.sel, s = S.state;
-  if (!owner()) { el.innerHTML = `<h2>${fmtY(d)}</h2><p class="small muted" style="margin:0">${s.partnerView.sharePrediction ? "予定日は目安です。" : "予定日の共有はオフになっています。"}</p>`; return; }
+  if (!owner()) {
+    const pl = (s.days || []).find(x => x.date === d);
+    el.innerHTML = `<h2>${fmtY(d)}</h2>${s.days ? (pl ? dayText(pl) : `<p class="small muted" style="margin:0">この日の体調記録はありません。</p>`) : ""}
+      <p class="small muted" style="margin:8px 0 0">${s.partnerView.sharePrediction ? "予定日は目安です。" : "予定日の共有はオフになっています。"}</p>`;
+    return;
+  }
   const r = dayInfo(d), l = s.days.find(x => x.date === d);
   const tags = [r.start && "生理開始日", r.end && "生理終了日", r.p && !r.start && !r.end && "生理", r.pp && "生理予定（目安）", r.o && "排卵日（目安）", r.f && "妊娠しやすい期間（目安）", r.pms && `PMS期間の始まり（予定日の${pmsDays()}日前・目安）`].filter(Boolean);
   el.innerHTML = `<h2>${fmtY(d)}</h2>${tags.length ? `<div class="row" style="margin-bottom:8px">${tags.map(x => `<span class="pill" style="background:var(--teal-soft);color:var(--ink)">${x}</span>`).join("")}</div>` : ""}
-    ${l ? `<p class="small" style="margin:0">${[l.flow && "経血量：" + esc(l.flow), l.symptoms.length && "症状：" + esc(l.symptoms.join("・")), l.mood && "気分：" + esc(l.mood), l.memo && "メモ：" + esc(l.memo)].filter(Boolean).join("<br>")}</p>` : `<p class="small muted" style="margin:0">この日の体調記録はありません。</p>`}
+    ${l ? dayText(l) : `<p class="small muted" style="margin:0">この日の体調記録はありません。</p>`}
     <div class="row" style="margin-top:10px"><button class="btn sm" id="dLog">${l ? "体調記録を編集" : "体調を記録"}</button></div>`;
   $("#dLog").onclick = () => { S.logDate = d; S.tab = "log"; render(); };
 }
 
 /* ---------- log ---------- */
-const FLOWS = ["なし", "少ない", "普通", "多い"], SYMS = ["腹痛", "腰痛", "頭痛", "胸の張り", "むくみ", "肌荒れ", "眠気", "だるさ", "吐き気", "食欲増加", "イライラ", "不眠"], MOODS = ["良い", "普通", "イライラ", "もやもや", "落ち込み", "悲しい", "不安"];
+const FLOWS = ["なし", "少ない", "普通", "多い"], SYMS = ["腹痛", "腰痛", "頭痛", "胸の張り", "むくみ", "肌荒れ", "眠気", "だるさ", "吐き気", "食欲増加", "イライラ", "不眠"], MOODS = ["良い", "普通", "イライラ", "もやもや", "落ち込み", "悲しい", "不安"], OTHERS = ["命の母を飲んだ"];
+const otherWords = () => [...OTHERS, ...((S.state.settings && S.state.settings.otherWords) || []).filter(w => !OTHERS.includes(w))];
 const chips = (name, arr, type, sel) => arr.map((x, i) => `<label class="chip"><input type="${type}" name="${name}" id="${name}${i}" value="${x}" ${sel(x) ? "checked" : ""}><span>${x}</span></label>`).join("");
 function viewLog(v) {
   const s = S.state, t = s.today; const d = S.logDate || t; const l = s.days.find(x => x.date === d) || {};
@@ -670,6 +679,8 @@ function viewLog(v) {
       <div class="field"><span class="lab2">経血量</span><div class="chips">${chips("flow", FLOWS, "radio", x => l.flow === x)}</div></div>
       <div class="field"><span class="lab2">症状（いくつでも）</span><div class="chips">${chips("sym", SYMS, "checkbox", x => (l.symptoms || []).includes(x))}</div></div>
       <div class="field"><span class="lab2">気分（いくつでも）</span><div class="chips">${chips("mood", MOODS, "checkbox", x => String(l.mood || "").split("・").includes(x))}</div></div>
+      <div class="field"><span class="lab2">その他（いくつでも）</span><div class="chips" id="othChips">${chips("oth", [...new Set([...otherWords(), ...(l.others || [])])], "checkbox", x => (l.others || []).includes(x))}<button type="button" class="chip-add" id="othAdd">＋ 言葉を追加</button></div>
+        <div class="row" id="othNew" hidden><input type="text" id="othWord" maxlength="20" placeholder="例：カイロを使った" style="flex:1"><button type="button" class="btn sm pri" id="othSave">追加</button></div></div>
       <div class="field"><label for="lMemo">メモ</label><textarea id="lMemo" placeholder="例：鎮痛剤を1回飲んだ">${esc(l.memo || "")}</textarea></div>
       <div class="row"><button class="btn pri" type="submit">保存する</button>${l.date ? `<button class="btn danger sm" type="button" id="lDel">この日の記録を消す</button>` : ""}</div>
     </form>
@@ -683,8 +694,21 @@ function viewLog(v) {
   $("#lf").onsubmit = async e => {
     e.preventDefault();
     const body = { date: $("#lDate").value, flow: (v.querySelector("input[name=flow]:checked") || {}).value || null, mood: [...v.querySelectorAll("input[name=mood]:checked")].map(x => x.value).join("・") || null,
-      symptoms: [...v.querySelectorAll("input[name=sym]:checked")].map(x => x.value), memo: $("#lMemo").value };
+      symptoms: [...v.querySelectorAll("input[name=sym]:checked")].map(x => x.value), others: [...v.querySelectorAll("input[name=oth]:checked")].map(x => x.value), memo: $("#lMemo").value };
     try { await api("day_save", body); toast("保存しました"); render(); } catch (er) { toast(er.message); }
+  };
+  $("#othAdd").onclick = () => { $("#othNew").hidden = false; $("#othWord").focus(); };
+  $("#othSave").onclick = async () => {
+    const w = $("#othWord").value.trim(); if (!w) return;
+    if (!otherWords().includes(w)) {
+      try { await api("settings_save", { settings: { otherWords: [...((S.state.settings.otherWords) || []), w] } }); }
+      catch (er) { toast(er.message); return; }
+    }
+    // add the chip in place (checked) without redrawing, so what is already ticked stays
+    const i = v.querySelectorAll("input[name=oth]").length;
+    if (![...v.querySelectorAll("input[name=oth]")].some(x => x.value === w))
+      $("#othAdd").insertAdjacentHTML("beforebegin", `<label class="chip"><input type="checkbox" name="oth" id="oth${i}" value="${esc(w)}" checked><span>${esc(w)}</span></label>`);
+    $("#othWord").value = ""; $("#othNew").hidden = true; toast("「" + w + "」を追加しました");
   };
   const del = $("#lDel"); del && (del.onclick = async () => { if (del.dataset.c !== "1") { del.dataset.c = "1"; del.textContent = "本当に消す（もう一度押す）"; return; } try { await api("day_delete", { date: d }); toast("消しました"); render(); } catch (er) { toast(er.message); } });
   $("#pAdd").onclick = () => { S.editing = S.editing === "new" ? null : "new"; render(); };
@@ -738,6 +762,13 @@ function viewSettingsOwner(v) {
         <select id="nPmsDays" style="width:auto;min-height:40px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:#fff;font-size:16px">${Array.from({ length: 10 }, (_, i) => 10 - i).map(n => `<option value="${n}" ${Number(st.pmsDays || 10) === n ? "selected" : ""}>${n}日前</option>`).join("")}</select></div>
       <p class="small muted" style="margin:4px 0 0">予定日やPMS期間のお知らせは毎朝8時ごろに届きます。カレンダーでは、PMS期間の始まりの日に悪魔マークが付きます（パートナーへの通知をオフにしても、自分の画面には表示されます）。目立たない通知をオンにすると、2人とも「お知らせ／新しいメッセージがあります」とだけ表示され、内容はアプリを開くと見られます。</p>
     </form>
+    <form class="card" id="df" style="display:grid;gap:2px"><h2>体調記録</h2>
+      ${sw("dShare", "パートナーに体調記録を見せる", st.shareDays)}
+      <div id="dMemoRow" ${st.shareDays ? "" : "hidden"}>${sw("dMemo", "メモも見せる", st.shareMemo)}</div>
+      <p class="small muted" style="margin:4px 0 8px">オンにすると、パートナーのカレンダーで日付を押したときに、直近4か月の体調記録（経血量・症状・気分・その他）が見られます。</p>
+      <span class="lab2">「その他」に追加した言葉</span>
+      <div class="chips" id="owList">${(st.otherWords || []).length ? st.otherWords.map((w, i) => `<span class="chip"><span>${esc(w)}<button type="button" class="x" data-ow="${i}" aria-label="${esc(w)}を消す">×</button></span></span>`).join("") : `<span class="small muted">まだありません。体調記録の「＋ 言葉を追加」で増やせます。</span>`}</div>
+    </form>
     <form class="card" id="hf" style="display:grid;gap:2px"><h2>ホームの表示</h2>
       <p class="small muted" style="margin:0 0 4px">「今後の生理予定日」に出す内容です。</p>
       ${sw("hOvu", "排卵日の目安を表示する", st.showOvuList !== false)}
@@ -762,13 +793,17 @@ function viewSettingsOwner(v) {
   v.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await api("approve_member", { id: b.dataset.ap }); toast("承認しました"); render(); } catch (er) { toast(er.message); b.disabled = false; } });
   v.querySelectorAll("[data-rm]").forEach(b => b.onclick = async () => { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "本当に" + b.textContent; return; } try { await api("remove_member", { id: b.dataset.rm }); toast("外しました"); render(); } catch (er) { toast(er.message); } });
   $("#tPartner").onclick = async e => { e.target.disabled = true; try { const r = await api("test_partner"); $("#tpOut").innerHTML = `<div class="note ${r.result.delivered ? "ok" : "warn"}">${r.result.delivered ? `パートナーの携帯${r.result.delivered}台に送りました。届いたか確認してもらってください。` : "届けられる携帯がありません。パートナーのアプリで通知をオンにしてもらってください。"}</div>`; } catch (er) { toast(er.message); } e.target.disabled = false; };
-  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush", nPms: "pmsNotify", hOvu: "showOvuList", hPms: "showPmsList" };
-  Object.entries(map).forEach(([id, k]) => $("#" + id).onchange = async e => { try { await api("settings_save", { settings: { [k]: e.target.checked } }); toast("保存しました"); if (id === "nPms") $("#pmsDaysRow").hidden = !e.target.checked; } catch (er) { toast(er.message); e.target.checked = !e.target.checked; } });
+  const map = { nStart: "notifyPartnerStart", nEnd: "notifyPartnerEnd", nSelf3: "remindSelf3", nSelfDay: "remindSelfDay", nPartner3: "remindPartner3", nShare: "sharePrediction", nDiscreet: "discreetPush", nPms: "pmsNotify", hOvu: "showOvuList", hPms: "showPmsList", dShare: "shareDays", dMemo: "shareMemo" };
+  Object.entries(map).forEach(([id, k]) => $("#" + id).onchange = async e => { try { await api("settings_save", { settings: { [k]: e.target.checked } }); toast("保存しました"); if (id === "nPms") $("#pmsDaysRow").hidden = !e.target.checked; if (id === "dShare") $("#dMemoRow").hidden = !e.target.checked; } catch (er) { toast(er.message); e.target.checked = !e.target.checked; } });
+  v.querySelectorAll("[data-ow]").forEach(b => b.onclick = async () => {
+    const list = [...(st.otherWords || [])]; list.splice(+b.dataset.ow, 1);
+    try { await api("settings_save", { settings: { otherWords: list } }); toast("消しました"); render(); } catch (er) { toast(er.message); }
+  });
   $("#nPmsDays").onchange = async e => { try { await api("settings_save", { settings: { pmsDays: Number(e.target.value) } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   $("#cf").onsubmit = async e => { e.preventDefault(); try { await api("settings_save", { settings: { defCycle: $("#dC").value, defLen: $("#dL").value } }); toast("保存しました"); render(); } catch (er) { toast(er.message); } };
   bindAccount(v);
   $("#xCsv").onclick = () => { const rows = [["開始日", "終了日", "日数", "前回からの周期"]]; s.periods.forEach((p, i) => rows.push([p.start_date, p.end_date || "", p.end_date ? diff(p.start_date, p.end_date) + 1 : "", i ? diff(s.periods[i - 1].start_date, p.start_date) : ""])); download("生理記録.csv", csv(rows), "text/csv"); };
-  $("#xCsv2").onclick = () => { const rows = [["日付", "経血量", "症状", "気分", "メモ"]]; s.days.forEach(d => rows.push([d.date, d.flow || "", d.symptoms.join("・"), d.mood || "", d.memo || ""])); download("体調記録.csv", csv(rows), "text/csv"); };
+  $("#xCsv2").onclick = () => { const rows = [["日付", "経血量", "症状", "気分", "その他", "メモ"]]; s.days.forEach(d => rows.push([d.date, d.flow || "", d.symptoms.join("・"), d.mood || "", (d.others || []).join("・"), d.memo || ""])); download("体調記録.csv", csv(rows), "text/csv"); };
   $("#xJson").onclick = () => download(`つきのしらせ_${s.today}.json`, JSON.stringify({ app: "tsuki", version: 2, periods: s.periods.map(p => ({ start: p.start_date, end: p.end_date })), days: s.days, settings: s.settings }, null, 2), "application/json");
   $("#imp").onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const o = JSON.parse(await f.text()); const periods = o.periods || Object.values(o.docs || {}).filter(x => x && x.kind === "period").map(x => ({ start: x.start, end: x.end })); const days = o.days || Object.values(o.docs || {}).filter(x => x && x.kind === "day"); const r = await api("import", { periods, days }); toast(r.imported + "件を復元しました"); render(); } catch (er) { toast("復元できませんでした：" + (er.message || "")); } e.target.value = ""; };
   $("#wipe").onclick = () => { $("#wipeOut").innerHTML = `<div class="note err"><b>すべての記録・設定・パートナーの登録を削除します</b>元に戻せません。<div class="row" style="margin-top:8px"><button class="btn sm danger" id="wGo">削除する</button><button class="btn sm" id="wNo">やめる</button></div></div>`;
