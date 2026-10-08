@@ -67,6 +67,8 @@ async function pushTo(pairId: string, target: Target, title: string, body: strin
 }
 
 /* ---------------- dates & stats ---------------- */
+// add さん unless the name already ends with an honorific (まりちゃん, あっくん …)
+const hon = (n: string) => (/(さん|ちゃん|くん|君|様|さま|たん|氏|ちん)$/.test(n) ? n : n + "さん");
 const pad = (n: number) => String(n).padStart(2, "0");
 const isDate = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const utc = (s: string) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
@@ -285,7 +287,7 @@ Deno.serve(async (req) => {
         const token = randToken();
         await sb.from("members").insert({ pair_id: pair.id, role: "partner", name, status: "pending", token_hash: await sha256(token) });
         const owner = await ownerName(pair.id);
-        await pushTo(pair.id, "owner", "参加リクエストが届きました", `${name}さんがパートナーとして参加を希望しています。「設定」で承認してください。`, "join_request");
+        await pushTo(pair.id, "owner", "参加リクエストが届きました", `${hon(name)}がパートナーとして参加を希望しています。「設定」で承認してください。`, "join_request");
         return json({ ok: true, token, ownerName: owner });
       }
     }
@@ -422,7 +424,7 @@ Deno.serve(async (req) => {
         return json({ ok: true, state: await buildState(me) });
       }
       case "test_partner": {
-        const r = await pushTo(me.pair_id, "partner", "テスト通知", `${me.name}さんの「つきのしらせ」からのテスト通知です。`, "test_partner");
+        const r = await pushTo(me.pair_id, "partner", "テスト通知", `${hon(me.name)}の「つきのしらせ」からのテスト通知です。`, "test_partner");
         return json({ ok: true, result: r });
       }
       case "regen_invite": {
@@ -434,7 +436,7 @@ Deno.serve(async (req) => {
       case "approve_member": {
         const { data: m } = await sb.from("members").update({ status: "active" }).eq("id", String(body.id)).eq("pair_id", me.pair_id).eq("role", "partner").select("id,name").maybeSingle();
         if (!m) throw new ApiError("not_found", "対象のパートナーが見つかりません。");
-        await pushTo(me.pair_id, { member: m.id }, "参加が承認されました", `${me.name}さんの「つきのしらせ」に参加しました。`, "approved");
+        await pushTo(me.pair_id, { member: m.id }, "参加が承認されました", `${hon(me.name)}の「つきのしらせ」に参加しました。`, "approved");
         return json({ ok: true, state: await buildState(me) });
       }
       case "remove_member": {

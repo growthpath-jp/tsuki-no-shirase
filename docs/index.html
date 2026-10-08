@@ -128,6 +128,7 @@ const LS = "tsuki_token";
 
 /* ---------- utils ---------- */
 const $ = (s, r = document) => r.querySelector(s);
+const hon = (n) => (/(さん|ちゃん|くん|君|様|さま|たん|氏|ちん)$/.test(n || "") ? n : (n || "") + "さん");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const pad = n => String(n).padStart(2, "0");
 const utc = s => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
@@ -301,7 +302,7 @@ function renderSetup() {
     catch (er) { setToken(null); toast(er.message || "復元できませんでした"); busy(e.target, false); } };
 }
 function renderPushPrompt() {
-  const st = S.state; const who = owner() ? "パートナーに知らせる準備ができました" : `${st.partnerView.ownerName}さんからの通知を受け取れます`;
+  const st = S.state; const who = owner() ? "パートナーに知らせる準備ができました" : `${esc(hon(st.partnerView.ownerName))}からの通知を受け取れます`;
   $("#root").innerHTML = `<div class="setup"><h1>通知をオンにしましょう</h1><p>${esc(who)}</p>
   <div class="card" style="display:grid;gap:10px">
     <p style="margin:0">${owner() ? "予定日の3日前や当日のお知らせが届きます。" : "「生理が始まりました」などのお知らせが、この携帯に届きます。"}</p>
@@ -317,9 +318,9 @@ function renderPushPrompt() {
 
 function renderPending() {
   const pv = S.state.partnerView;
-  $("#root").innerHTML = `<div class="setup"><h1>承認を待っています</h1><p>${esc(pv.ownerName)}さんが承認すると使えるようになります。</p>
+  $("#root").innerHTML = `<div class="setup"><h1>承認を待っています</h1><p>${esc(hon(pv.ownerName))}が承認すると使えるようになります。</p>
   <div style="display:grid;gap:12px"><div id="pushCard"></div>
-    <div class="card" style="display:grid;gap:10px"><p style="margin:0">${esc(pv.ownerName)}さんの携帯に参加リクエストを送りました。承認されると、この携帯に通知が届きます。</p>
+    <div class="card" style="display:grid;gap:10px"><p style="margin:0">${esc(hon(pv.ownerName))}の携帯に参加リクエストを送りました。承認されると、この携帯に通知が届きます。</p>
       <button class="btn pri" id="pdRe">状態を確認する</button>
       <button class="btn sm danger" id="pdLeave">参加をやめる</button></div></div></div>`;
   pushCard($("#pushCard"));
@@ -385,10 +386,10 @@ function viewHomeOwner(v) {
   }
   const ovNext = st.predictions.find(x => diff(t, x.ovulation) >= 0) || st.predictions[0];
   const partner = activePartners(), pend = pendingPartners();
-  const pState = pend.length ? `<div class="note warn"><b>参加リクエストが届いています</b>${pend.map(m => esc(m.name)).join("、")}さんが参加を希望しています。「設定」で承認してください。</div>`
+  const pState = pend.length ? `<div class="note warn"><b>参加リクエストが届いています</b>${pend.map(m => esc(hon(m.name))).join("、")}が参加を希望しています。「設定」で承認してください。</div>`
     : !partner.length ? `<div class="note warn"><b>パートナーがまだ参加していません</b>「設定」の招待コードをパートナーに伝えてください。</div>`
     : partner.some(m => m.pushDevices > 0) ? `<p class="small muted" style="margin:0">通知先：${partner.map(m => esc(m.name)).join("、")}（通知オン）${s.settings.notifyPartnerStart ? "" : "・開始時の通知はオフ"}</p>`
-    : `<div class="note warn"><b>パートナーの通知がオフです</b>${partner.map(m => esc(m.name)).join("、")}さんのアプリで「通知をオンにする」を押してもらってください。</div>`;
+    : `<div class="note warn"><b>パートナーの通知がオフです</b>${partner.map(m => esc(hon(m.name))).join("、")}のアプリで「通知をオンにする」を押してもらってください。</div>`;
   v.innerHTML = `<section class="hero">${heroHead(t)}
     <div class="ringwrap"><div class="ring">${ringSvg(frac)}<div class="center">${center}</div></div></div>
     ${ovNext && !active ? `<div class="ovu">排卵予定日 <b>${md(ovNext.ovulation)}</b>(${dw(ovNext.ovulation)})</div>` : ""}
@@ -411,12 +412,12 @@ function viewHomePartner(v) {
   let center, frac = 0;
   if (pv.activeSince) {
     const d = diff(pv.activeSince, t) + 1; frac = d / 6;
-    center = `<div class="lab">${esc(pv.ownerName)}さん</div><div class="big">${d}<small>日目</small></div><div class="rest">生理中です</div>`;
+    center = `<div class="lab">${esc(hon(pv.ownerName))}</div><div class="big">${d}<small>日目</small></div><div class="rest">生理中です</div>`;
   } else if (pv.next) {
     const u = diff(t, pv.next); frac = 1 - Math.max(0, u) / 28;
     center = `<div class="lab">次の生理予定日</div><div class="big">${md(pv.next)}<small>(${dw(pv.next)})</small></div><div class="rest">${u >= 0 ? `あと${u}日` : "予定日を過ぎています"}</div>`;
   } else {
-    center = `<div class="lab">${esc(pv.ownerName)}さん</div><div class="rest" style="margin-top:6px">生理が始まると<br>通知でお知らせします</div>`;
+    center = `<div class="lab">${esc(hon(pv.ownerName))}</div><div class="rest" style="margin-top:6px">生理が始まると<br>通知でお知らせします</div>`;
   }
   v.innerHTML = `<section class="hero"><div class="date">${md(t)}<small>(${dw(t)})</small></div><div class="sub">パートナー用の画面</div>
     <div class="ringwrap"><div class="ring">${ringSvg(frac)}<div class="center">${center}</div></div></div></section>
@@ -614,7 +615,7 @@ function editBox(el, p) {
 function sw(id, label, on) { return `<div class="switch"><label for="${id}">${label}</label><input type="checkbox" id="${id}" ${on ? "checked" : ""}></div>`; }
 function viewSettingsOwner(v) {
   const s = S.state, st = s.settings, partners = s.members.filter(m => m.role === "partner"), actives = activePartners();
-  v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">設定</div><div class="sub">${esc(s.me.name)}さん（記録する人）</div></section>
+  v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">設定</div><div class="sub">${esc(hon(s.me.name))}（記録する人）</div></section>
   <div class="wrap">
     <div id="pushCard"></div>
     <div class="card" style="display:grid;gap:8px"><h2 style="margin:0">パートナー</h2>
@@ -672,7 +673,7 @@ function viewSettingsOwner(v) {
 }
 function viewSettingsPartner(v) {
   const s = S.state;
-  v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">設定</div><div class="sub">${esc(s.me.name)}さん（パートナー）</div></section>
+  v.innerHTML = `<section class="hero" style="padding-bottom:18px"><div class="date">設定</div><div class="sub">${esc(hon(s.me.name))}（パートナー）</div></section>
   <div class="wrap"><div id="pushCard"></div>${accountCard()}
     <div class="card" style="display:grid;gap:8px"><h2 style="margin:0">参加をやめる</h2><p class="small muted" style="margin:0">通知が届かなくなります。もう一度参加するには招待コードが必要です。</p><button class="btn sm danger" id="leave">参加をやめる</button></div></div>`;
   pushCard($("#pushCard")); bindAccount(v);
