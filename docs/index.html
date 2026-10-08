@@ -189,25 +189,41 @@ function phraseUnits(t) {
   const ps = window.jaPhrases(t), out = [];
   for (let i = 0; i < ps.length; i++) {
     let u = ps[i];
-    const open = u.lastIndexOf("（");
-    if (open >= 0 && u.indexOf("）", open) < 0) { // a （ opens in this phrase: try to keep the parenthetical whole
+    // a （…） or 「…」 opens in this phrase: try to keep it whole
+    const oP = u.lastIndexOf("（"), oQ = u.lastIndexOf("「");
+    const open = Math.max(oP, oQ), close = open === oP ? "）" : "」", limit = open === oP ? 16 : 12;
+    if (open >= 0 && u.indexOf(close, open) < 0) {
       let j = i, acc = u;
-      while (j + 1 < ps.length && acc.indexOf("）", open) < 0) acc += ps[++j];
-      if (acc.length - open <= 16) {
+      while (j + 1 < ps.length && acc.indexOf(close, open) < 0) acc += ps[++j];
+      if (acc.indexOf(close, open) >= 0 && acc.indexOf(close, open) - open + 1 <= limit) {
         if (open > 0) { out.push(u.slice(0, open)); u = acc.slice(open); } else u = acc;
         i = j;
-      }
+      } else if (open > 0) { out.push(u.slice(0, open)); u = u.slice(open); } // never leave 「（」 dangling at a line end
     }
     out.push(u);
   }
-  // a tiny tail like 「する」 joins the phrase before it (no 「通知に／する」)
+  // keep words that belong together on one line:
+  //  ・a tiny tail like 「する」 joins the phrase before it (no 「通知に／する」)
+  //  ・「〇〇の」+ next (「花ちゃんの気分が」「予定日の3日前に」)
+  //  ・a describing word ending in い/な + the noun after it (「ゆらぎやすい時期に」「新しいコードが」)
+  // an opening bracket always starts the next piece, never ends a line
+  for (let k = 0; k < out.length - 1; k++) {
+    const mt = out[k].match(/[（「]+$/);
+    if (mt) { out[k] = out[k].slice(0, -mt[0].length); out[k + 1] = mt[0] + out[k + 1]; }
+  }
   const res = [];
   for (const u of out.filter(Boolean)) {
-    if (res.length && u.length <= 2 && !u.startsWith("（") && !u.startsWith("「")) res[res.length - 1] += u; else res.push(u);
+    const prev = res[res.length - 1];
+    const opener = u.startsWith("（") || u.startsWith("「");
+    const tiny = u.length <= 2 && !opener && prev && !/[。、！？]$/.test(prev);
+    const glue = prev && !opener && /(の|(?<!さ)い|な)$/.test(prev) && /^[\u3400-\u9fffA-Za-z0-9ァ-ヶー]/.test(u) && (prev.length + u.length <= 14 || (/(この|その|あの)$/.test(prev) && u.length <= 5));
+    if (prev && (tiny || glue)) res[res.length - 1] += u; else res.push(u);
   }
   return res;
 }
 function phraseText(node) {
+  // keep 「9月30日(水)」 in one piece: no break before a half-width ( that follows text
+  if (/[^\s\u2060]\(/.test(node.nodeValue || "")) node.nodeValue = node.nodeValue.replace(/([^\s\u2060])\(/g, "$1\u2060(");
   const t = node.nodeValue;
   if (!t || t.length < 6 || !JA.test(t) || !window.jaPhrases) return;
   for (let el = node.parentNode; el && el !== document.body; el = el.parentNode) {
@@ -465,7 +481,7 @@ function viewHomeOwner(v) {
       <div class="stat"><b>${st.avgCycle}日</b><span>平均周期${st.cycleSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${st.avgLen}日</b><span>平均の生理日数${st.lenSource === "default" ? "（初期値）" : ""}</span></div>
       <div class="stat"><b>${s.periods.length}回</b><span>記録した回数</span></div></div></div>
-    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}・排卵日の目安 ${fmt(x.ovulation)}${pmsOn() ? `・PMS期間の始まり ${fmt(addDays(x.start, -pmsDays()))}` : ""}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
+    <div class="card"><h2>今後の生理予定日</h2><div class="list">${st.predictions.length ? st.predictions.map(x => `<div class="it"><div><b>${fmtY(x.start)}</b><div class="small muted">〜${fmt(x.end)}まで<br>排卵日の目安 ${fmt(x.ovulation)}${pmsOn() ? `<br>PMS期間の始まり ${fmt(addDays(x.start, -pmsDays()))}` : ""}</div></div><span class="small muted">あと${Math.max(0, diff(t, x.start))}日</span></div>`).join("") : `<p class="small muted" style="margin:0">記録が1回以上あると表示されます。</p>`}</div>
       <p class="small muted" style="margin:8px 0 0">予定日・排卵日は過去の周期からの目安です。避妊や妊娠の判断には使わないでください。</p></div>
   </div>`;
   const a = $("#bStart"); a && (a.onclick = startFlow);
@@ -634,8 +650,8 @@ function viewLog(v) {
     <form class="card" id="lf" style="display:grid;gap:12px">
       <div class="field"><label for="lDate">日付</label><input type="date" id="lDate" value="${d}" max="${t}"></div>
       <div class="field"><span class="lab2">経血量</span><div class="chips">${chips("flow", FLOWS, "radio", x => l.flow === x)}</div></div>
-      <div class="field"><span class="lab2">症状</span><div class="chips">${chips("sym", SYMS, "checkbox", x => (l.symptoms || []).includes(x))}</div></div>
-      <div class="field"><span class="lab2">気分</span><div class="chips">${chips("mood", MOODS, "radio", x => l.mood === x)}</div></div>
+      <div class="field"><span class="lab2">症状（いくつでも）</span><div class="chips">${chips("sym", SYMS, "checkbox", x => (l.symptoms || []).includes(x))}</div></div>
+      <div class="field"><span class="lab2">気分（いくつでも）</span><div class="chips">${chips("mood", MOODS, "checkbox", x => String(l.mood || "").split("・").includes(x))}</div></div>
       <div class="field"><label for="lMemo">メモ</label><textarea id="lMemo" placeholder="例：鎮痛剤を1回飲んだ">${esc(l.memo || "")}</textarea></div>
       <div class="row"><button class="btn pri" type="submit">保存する</button>${l.date ? `<button class="btn danger sm" type="button" id="lDel">この日の記録を消す</button>` : ""}</div>
     </form>
@@ -648,7 +664,7 @@ function viewLog(v) {
   v.querySelectorAll('input[type=radio]:checked').forEach(r => r.dataset.was = "1");
   $("#lf").onsubmit = async e => {
     e.preventDefault();
-    const body = { date: $("#lDate").value, flow: (v.querySelector("input[name=flow]:checked") || {}).value || null, mood: (v.querySelector("input[name=mood]:checked") || {}).value || null,
+    const body = { date: $("#lDate").value, flow: (v.querySelector("input[name=flow]:checked") || {}).value || null, mood: [...v.querySelectorAll("input[name=mood]:checked")].map(x => x.value).join("・") || null,
       symptoms: [...v.querySelectorAll("input[name=sym]:checked")].map(x => x.value), memo: $("#lMemo").value };
     try { await api("day_save", body); toast("保存しました"); render(); } catch (er) { toast(er.message); }
   };
