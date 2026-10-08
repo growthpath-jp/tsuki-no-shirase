@@ -75,7 +75,7 @@ textarea{min-height:90px}
 .chip span{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;background:#fff;font-size:.9rem;cursor:pointer}
 .chip input:checked+span{background:var(--coral-soft);border-color:var(--coral);color:var(--coral-deep);font-weight:700}
 .switch{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-block:6px}
-.switch input{width:24px;height:24px;accent-color:var(--teal)}
+.switch input{width:24px;height:24px;flex-shrink:0;accent-color:var(--teal)}
 .note{border-radius:12px;padding:10px 12px;font-size:.9rem}
 .note.ok{background:#e3f4ea} .note.warn{background:#fdf0d8} .note.err{background:#fde3e4}
 .note b{display:block}
@@ -120,6 +120,10 @@ nav.tabs button.on{color:var(--teal-deep)}
 .mono{font-family:ui-monospace,Menlo,monospace;word-break:break-all;user-select:all;background:var(--bg);padding:8px;border-radius:8px;font-size:.85rem}
 .loading{display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--teal);color:#fff;font-weight:700}
 @media (max-width:360px){.stats{grid-template-columns:1fr 1fr}}
+/* Japanese line breaking: wrap only between phrases (break points are inserted by phrase.js), never mid-word */
+#root,#ovRoot,#toastRoot{word-break:keep-all;overflow-wrap:anywhere;line-break:strict}
+h1,h2,label,button,.switch label,.note b,.lab2,.stat span,.list .it b,.hero .sub,.lab,.rest{text-wrap:balance}
+p,.note,.small{text-wrap:pretty}
 </style>
 </head>
 <body>
@@ -127,6 +131,7 @@ nav.tabs button.on{color:var(--teal-deep)}
 <div id="root"><div class="loading">読み込み中…</div></div>
 <div id="ovRoot"></div>
 <div id="toastRoot"></div>
+<script src="phrase.js"></script>
 <script>
 "use strict";
 const API = "https://nkmlmqkakwronvjuziwj.supabase.co/functions/v1/api";
@@ -173,6 +178,59 @@ function download(name, text, type) {
   a.href = URL.createObjectURL(b); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
+
+
+/* ---------- Japanese phrase line-breaking ---------- */
+// Insert <wbr> between phrases so lines break like 「PMS期間の始まりを／パートナーに知らせる」.
+// A short （…） stays in one piece so it moves to the next line as a whole.
+const JA = /[\u3040-\u30ff\u3400-\u9fff]/;
+const SKIP = new Set(["SCRIPT", "STYLE", "TEXTAREA", "OPTION", "SELECT", "INPUT", "svg", "SVG"]);
+function phraseUnits(t) {
+  const ps = window.jaPhrases(t), out = [];
+  for (let i = 0; i < ps.length; i++) {
+    let u = ps[i];
+    const open = u.lastIndexOf("（");
+    if (open >= 0 && u.indexOf("）", open) < 0) { // a （ opens in this phrase: try to keep the parenthetical whole
+      let j = i, acc = u;
+      while (j + 1 < ps.length && acc.indexOf("）", open) < 0) acc += ps[++j];
+      if (acc.length - open <= 16) {
+        if (open > 0) { out.push(u.slice(0, open)); u = acc.slice(open); } else u = acc;
+        i = j;
+      }
+    }
+    out.push(u);
+  }
+  // a tiny tail like 「する」 joins the phrase before it (no 「通知に／する」)
+  const res = [];
+  for (const u of out.filter(Boolean)) {
+    if (res.length && u.length <= 2 && !u.startsWith("（") && !u.startsWith("「")) res[res.length - 1] += u; else res.push(u);
+  }
+  return res;
+}
+function phraseText(node) {
+  const t = node.nodeValue;
+  if (!t || t.length < 6 || !JA.test(t) || !window.jaPhrases) return;
+  for (let el = node.parentNode; el && el !== document.body; el = el.parentNode) {
+    if (SKIP.has(el.nodeName) || (el.classList && (el.classList.contains("mono") || el.classList.contains("code")))) return;
+  }
+  const units = phraseUnits(t);
+  if (units.length < 2) return;
+  const f = document.createDocumentFragment();
+  units.forEach((u, i) => { if (i) f.appendChild(document.createElement("wbr")); f.appendChild(document.createTextNode(u)); });
+  node.parentNode.replaceChild(f, node);
+}
+function phraseAll(root) {
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const list = [];
+  while (w.nextNode()) list.push(w.currentNode);
+  list.forEach(phraseText);
+}
+const phraseObs = new MutationObserver(recs => {
+  phraseObs.disconnect();
+  for (const r of recs) r.addedNodes.forEach(n => n.nodeType === 3 ? phraseText(n) : n.nodeType === 1 && phraseAll(n));
+  phraseObs.takeRecords();
+  phraseObs.observe(document.body, { childList: true, subtree: true });
+});
+phraseObs.observe(document.body, { childList: true, subtree: true });
 
 /* ---------- state ---------- */
 const S = { state: null, tab: "home", calY: null, calM: null, sel: null, logDate: null, editing: null };
