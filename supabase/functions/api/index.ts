@@ -8,8 +8,11 @@ const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SE
   auth: { persistSession: false },
 });
 
+// only the app's own pages may call this API from a browser
+const ALLOWED_ORIGIN = "https://growthpath-jp.github.io";
 const CORS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+  "Vary": "Origin",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-tsuki-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
@@ -63,14 +66,39 @@ async function pushTo(pairId: string, target: Target, title: string, body: strin
   }
   const label = typeof target === "object" ? "self" : target;
   await sb.from("notices").insert({ pair_id: pairId, kind, target: label, title, body, delivered, failed });
-  return { recipients, delivered, failed, errors };
+  if (errors.length) console.warn("push errors", errors.join(","));
+  return { recipients, delivered, failed };
 }
 
 /* ---------------- dates & stats ---------------- */
 // add さん unless the name already ends with an honorific (まりちゃん, あっくん …)
 const hon = (n: string) => (/(さん|ちゃん|くん|君|様|さま|たん|氏|ちん)$/.test(n) ? n : n + "さん");
 const pad = (n: number) => String(n).padStart(2, "0");
-const isDate = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const isDate = (s: unknown): s is string => {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(s + "T00:00:00Z");
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s && s >= "2000-01-01";
+};
+// fixed choices of the 体調記録 (must match the app)
+const FLOWS = ["なし", "少ない", "普通", "多い"];
+const SYMS = ["腹痛", "腰痛", "頭痛", "胸の張り", "むくみ", "肌荒れ", "眠気", "だるさ", "吐き気", "食欲増加", "イライラ", "不眠"];
+const MOODS = ["良い", "普通", "イライラ", "もやもや", "落ち込み", "悲しい", "不安"];
+const cleanWords = (v: unknown, max: number, len: number) =>
+  Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string").map((x) => (x as string).trim().slice(0, len)).filter(Boolean))].slice(0, max) : [];
+// one 体調記録 row, validated the same way for day_save and import
+function dayRow(pairId: string, d: Record<string, unknown>) {
+  const moods = typeof d.mood === "string" ? d.mood.split("・").filter((m) => MOODS.includes(m)) : [];
+  return {
+    pair_id: pairId, date: d.date as string,
+    flow: typeof d.flow === "string" && FLOWS.includes(d.flow) ? d.flow : null,
+    symptoms: cleanWords(d.symptoms, 20, 20).filter((x) => SYMS.includes(x)),
+    mood: moods.length ? [...new Set(moods)].join("・") : null,
+    others: cleanWords(d.others, 30, 30),
+    memo: typeof d.memo === "string" ? d.memo.slice(0, 1000) : "",
+    updated_at: new Date().toISOString(),
+  };
+}
+const MAX_DAYS = 4000, MAX_PERIODS = 600;
 const utc = (s: string) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
 const toStr = (ms: number) => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; };
 const addDays = (s: string, n: number) => toStr(utc(s) + n * 864e5);
@@ -88,7 +116,7 @@ const DEFAULT_SETTINGS = {
   shareDays: false, shareMemo: false, // show the 体調記録 to the partner (memo separately)
   otherWords: [] as string[], // the recorder's own words for 体調記録「その他」
 };
-type Period = { id: string; start_date: string; end_date: string | null };
+type Period = { id: string; start_date: string; end_date: string | null; shared?: boolean };
 
 function computeStats(periods: Period[], settings: typeof DEFAULT_SETTINGS, today: string) {
   const ps = [...periods].sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
@@ -125,6 +153,7 @@ async function sha256(s: string) {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
+const safeEqual = (a: string, b: string) => { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; };
 const randToken = () => {
   const b = crypto.getRandomValues(new Uint8Array(24));
   return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -142,18 +171,27 @@ async function auth(req: Request): Promise<Member> {
   if (!data) throw new ApiError("unauthorized", "この端末の登録が見つかりません。引き継ぎコードで復元するか、最初から登録してください。", 401);
   return data as Member;
 }
-// rate limit for the public entry points: max N attempts per hour per network (IP is stored only as a hash)
+// rate limits: count attempts per key in a time window (a network's IP or a device is stored only as a hash)
+// the right-most address is the one added by the platform's own proxy (a client can only prepend fake ones)
+const clientIp = (req: Request) => {
+  const hops = (req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown").split(",").map((x) => x.trim()).filter(Boolean);
+  const ip = hops[hops.length - 1] || "unknown";
+  return ip.includes(":") ? ip.split(":").slice(0, 4).join(":") : ip; // IPv6: count the whole /64 as one network
+};
 async function limit(req: Request, action: string, max = 5) {
-  const ip = (req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown").split(",")[0].trim();
-  const key = action + ":" + (await sha256("tsuki:" + ip));
-  const since = new Date(Date.now() - 3600e3).toISOString();
+  await limitKey(action + ":" + (await sha256("tsuki:" + clientIp(req))), max, 3600,
+    "短い時間に何度も試されたため、一時的に止めています。1時間ほど待ってからもう一度お試しください。");
+}
+async function limitKey(key: string, max: number, windowSec: number, message: string) {
+  const since = new Date(Date.now() - windowSec * 1000).toISOString();
   // record first, then count only the attempts recorded up to and including this one (ordered by id),
   // so in a burst exactly the first `max` pass and the rest are refused
   const { data: hit } = await sb.from("rate_hits").insert({ key }).select("id").single();
   const { count } = await sb.from("rate_hits").select("id", { count: "exact", head: true }).eq("key", key).gte("at", since).lte("id", hit?.id ?? 0);
-  if ((count ?? 0) > max)
-    throw new ApiError("rate_limited", "短い時間に何度も試されたため、一時的に止めています。1時間ほど待ってからもう一度お試しください。", 429);
+  if (Math.random() < 0.02) await sb.from("rate_hits").delete().lt("at", new Date(Date.now() - 2 * 3600e3).toISOString());
+  if ((count ?? 0) > max) throw new ApiError("rate_limited", message, 429);
 }
+const BUSY = "操作が続いたため、一時的に止めています。少し時間をおいてからもう一度お試しください。";
 const ownerOnly = (m: Member) => { if (m.role !== "owner") throw new ApiError("forbidden", "記録する人だけが使える操作です。", 403); };
 
 async function loadPair(pairId: string) {
@@ -162,7 +200,7 @@ async function loadPair(pairId: string) {
   return { ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings ?? {}) } };
 }
 async function loadPeriods(pairId: string) {
-  const { data, error } = await sb.from("periods").select("id,start_date,end_date").eq("pair_id", pairId).order("start_date");
+  const { data, error } = await sb.from("periods").select("id,start_date,end_date,shared").eq("pair_id", pairId).order("start_date");
   if (error) throw error;
   return (data ?? []) as Period[];
 }
@@ -207,7 +245,7 @@ async function buildState(me: Member) {
     today, me, members, days,
     partnerView: {
       ownerName: await ownerName(me.pair_id),
-      activeSince: active?.start_date ?? null,
+      activeSince: active && active.shared !== false && pair.settings.notifyPartnerStart ? active.start_date : null,
       next: pair.settings.sharePrediction ? stats.next : null,
       predictions: pair.settings.sharePrediction ? stats.predictions.slice(0, 4) : [],
       sharePrediction: pair.settings.sharePrediction,
@@ -238,7 +276,7 @@ async function runCron() {
       jobs.push({ kind: "remind_self_day", target: "owner", title: "今日は生理予定日です", body: "始まったら「生理がきた」を押してください。" });
     const pmsDays = Math.min(10, Math.max(1, Number(settings.pmsDays) || 10));
     if (until === pmsDays && settings.pmsNotify)
-      jobs.push({ kind: "pms_partner", target: "partner", title: `${name}の気分がゆらぎやすい時期に入りました`, body: `生理予定日（${fmt(st.next)}）の${pmsDays}日前です。いつもより少し気づかってあげてください（目安）。` });
+      jobs.push({ kind: "pms_partner", target: "partner", title: `${name}の気分がゆらぎやすい時期に入りました`, body: settings.sharePrediction ? `生理予定日（${fmt(st.next)}）の${pmsDays}日前です。いつもより少し気づかってあげてください（目安）。` : "いつもより少し気づかってあげてください（目安）。" });
     if (until === 3 && settings.remindPartner3)
       jobs.push({ kind: "remind_partner_3", target: "partner", title: `${name}の生理予定日まであと3日`, body: `予定日は${fmt(st.next)}です（目安）。` });
     for (const j of jobs) {
@@ -254,10 +292,20 @@ async function runCron() {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ ok: false, code: "method", message: "POST only" }, 405);
+  // a browser on any other site is refused (server-to-server calls such as the daily job send no Origin)
+  const origin = req.headers.get("origin");
+  if (origin && origin !== ALLOWED_ORIGIN) return json({ ok: false, code: "forbidden", message: "forbidden" }, 403);
+  // refuse oversized requests before parsing them
+  if (Number(req.headers.get("content-length") || 0) > 512 * 1024) return json({ ok: false, code: "too_large", message: "送信できる量を超えています。" }, 413);
+  const raw = await req.text();
+  if (raw.length > 512 * 1024) return json({ ok: false, code: "too_large", message: "送信できる量を超えています。" }, 413);
   let body: Record<string, any> = {};
-  try { body = await req.json(); } catch { /* empty */ }
+  try { body = JSON.parse(raw || "{}"); } catch { /* empty */ }
+  if (!body || typeof body !== "object" || Array.isArray(body)) body = {};
   const action = String(body.action || "");
   try {
+    // every call: at most 300 per 10 minutes from one network
+    if (action !== "cron") await limitKey("all:" + (await sha256("tsuki:" + clientIp(req))), 300, 600, BUSY);
     switch (action) {
       case "vapid": {
         const s = await getSecrets();
@@ -265,7 +313,11 @@ Deno.serve(async (req) => {
       }
       case "cron": {
         const s = await getSecrets();
-        if (body.secret !== s.cron_secret) throw new ApiError("forbidden", "bad secret", 403);
+        const given = typeof body.secret === "string" ? body.secret : "";
+        if (!s.cron_secret || !given || !safeEqual(await sha256(given), await sha256(s.cron_secret))) {
+          await limitKey("cronfail:" + (await sha256("tsuki:" + clientIp(req))), 5, 3600, "forbidden");
+          throw new ApiError("forbidden", "forbidden", 403);
+        }
         return json({ ok: true, ...(await runCron()) });
       }
       case "setup_owner": {
@@ -300,8 +352,24 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (action === "redeem") {
+      await limit(req, "redeem", 10);
+      const code = typeof body.code === "string" ? body.code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") : "";
+      if (code.length < 12) throw new ApiError("not_found", "引き継ぎコードが正しくないか、有効期限が切れています。", 404);
+      const { data: tc } = await sb.from("transfer_codes").delete().eq("code_hash", await sha256(code)).gt("expires_at", new Date().toISOString()).select("member_id").maybeSingle();
+      if (!tc) throw new ApiError("not_found", "引き継ぎコードが正しくないか、有効期限が切れています。", 404);
+      // new token for the new phone; the old phone's token stops working and its notifications are removed
+      const token = randToken();
+      await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", tc.member_id);
+      await sb.from("push_subs").delete().eq("member_id", tc.member_id);
+      await sb.from("transfer_codes").delete().eq("member_id", tc.member_id);
+      return json({ ok: true, token });
+    }
+
     const me = await auth(req);
-    if (me.status !== "active" && !["state", "subscribe", "unsubscribe", "test_push", "leave", "claim"].includes(action))
+    // every signed-in call: at most 150 per 10 minutes per person
+    await limitKey("member:" + me.id, 150, 600, BUSY);
+    if (me.status !== "active" && !["state", "subscribe", "unsubscribe", "test_push", "leave", "transfer_code"].includes(action))
       throw new ApiError("pending", "記録する人の承認を待っています。", 403);
     switch (action) {
       case "state":
@@ -309,8 +377,18 @@ Deno.serve(async (req) => {
 
       case "subscribe": {
         const s = body.subscription;
-        if (!s?.endpoint || !s?.keys?.p256dh || !s?.keys?.auth) throw new ApiError("bad_request", "通知の登録情報が不正です。");
-        await sb.from("push_subs").upsert({ member_id: me.id, endpoint: s.endpoint, p256dh: s.keys.p256dh, auth: s.keys.auth }, { onConflict: "endpoint" });
+        const ep = typeof s?.endpoint === "string" ? s.endpoint : "", k1 = s?.keys?.p256dh, k2 = s?.keys?.auth;
+        let host = "";
+        try { const u = new URL(ep); if (u.protocol === "https:") host = u.hostname; } catch { /* invalid */ }
+        const PUSH_HOSTS = [/\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/, /^android\.googleapis\.com$/];
+        if (!host || !PUSH_HOSTS.some((r) => r.test(host)) || ep.length > 1024 || typeof k1 !== "string" || typeof k2 !== "string" || k1.length > 200 || k2.length > 100)
+          throw new ApiError("bad_request", "通知の登録情報が不正です。");
+        const { data: owner } = await sb.from("push_subs").select("member_id").eq("endpoint", ep).maybeSingle();
+        if (owner && owner.member_id !== me.id) throw new ApiError("conflict", "この携帯の通知はほかの登録で使われています。", 409);
+        await sb.from("push_subs").upsert({ member_id: me.id, endpoint: ep, p256dh: k1, auth: k2 }, { onConflict: "endpoint" });
+        const { data: mine } = await sb.from("push_subs").select("id,created_at").eq("member_id", me.id).order("created_at", { ascending: false });
+        const extra = (mine ?? []).slice(3).map((x) => x.id);
+        if (extra.length) await sb.from("push_subs").delete().in("id", extra);
         return json({ ok: true });
       }
       case "unsubscribe": {
@@ -321,19 +399,14 @@ Deno.serve(async (req) => {
         const r = await pushTo(me.pair_id, { member: me.id }, "テスト通知", "つきのしらせ からの通知は、このように届きます。", "test");
         return json({ ok: true, result: r });
       }
-      case "claim": {
-        // a device takes over this member with a transfer code: issue a fresh token so every other device
-        // holding the old one is signed out, and drop old devices' push registrations (one phone per person)
-        const token = randToken();
-        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
-        await sb.from("push_subs").delete().eq("member_id", me.id);
-        return json({ ok: true, token });
-      }
       case "transfer_code": {
-        // issue a fresh token for moving to a new phone; old token stops working
-        const token = randToken();
-        await sb.from("members").update({ token_hash: await sha256(token) }).eq("id", me.id);
-        return json({ ok: true, token });
+        // a one-time code valid for 60 minutes; the current phone keeps working until it is used
+        const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        const b = crypto.getRandomValues(new Uint8Array(16));
+        const code = Array.from(b).map((x) => A[x % A.length]).join("");
+        await sb.from("transfer_codes").delete().eq("member_id", me.id);
+        await sb.from("transfer_codes").insert({ code_hash: await sha256(code), member_id: me.id, expires_at: new Date(Date.now() + 3600e3).toISOString() });
+        return json({ ok: true, code: code.replace(/(.{4})(?=.)/g, "$1-"), minutes: 60 });
       }
       case "rename": {
         const name = String(body.name || "").trim().slice(0, 20);
@@ -358,12 +431,14 @@ Deno.serve(async (req) => {
         const periods = await loadPeriods(me.pair_id);
         const near = periods.find((p) => Math.abs(diff(p.start_date, date)) < 10);
         if (near && !body.force) throw new ApiError("duplicate", `${fmt(near.start_date)} 開始の記録がすでにあります。`, 409);
-        const { data: ins, error } = await sb.from("periods").insert({ pair_id: me.pair_id, start_date: date }).select("id").single();
-        if (error) throw error;
+        if (periods.length >= MAX_PERIODS) throw new ApiError("too_many", "記録の上限に達しています。", 409);
         const pair = await loadPair(me.pair_id);
-        const st = computeStats([...periods, { id: ins.id, start_date: date, end_date: null }], pair.settings, today);
+        const shared = body.notify !== false && !!pair.settings.notifyPartnerStart;
+        const { data: ins, error } = await sb.from("periods").insert({ pair_id: me.pair_id, start_date: date, shared }).select("id").single();
+        if (error) throw error;
+        const st = computeStats([...periods, { id: ins.id, start_date: date, end_date: null, shared }], pair.settings, today);
         let push = null;
-        if (body.notify !== false && pair.settings.notifyPartnerStart) {
+        if (shared) {
           push = await pushTo(me.pair_id, "partner", "生理が始まりました", `${me.name}の生理が${fmt(date)}に始まりました。体調を気づかってあげてください。`, "period_start");
         }
         return json({ ok: true, summary: { start: date, expectedLen: st.avgLen, expectedEnd: addDays(date, st.avgLen - 1), avgCycle: st.avgCycle, cycleSource: st.cycleSource, next: st.next }, push, state: await buildState(me) });
@@ -373,7 +448,8 @@ Deno.serve(async (req) => {
         const { data: p } = await sb.from("periods").select("id,start_date").eq("id", String(body.id)).eq("pair_id", me.pair_id).maybeSingle();
         if (!p) throw new ApiError("not_found", "対象の記録が見つかりません。");
         if (diff(p.start_date, date) < 0 || diff(date, today) < 0) throw new ApiError("bad_request", "終了日は開始日から今日までの間で選んでください。");
-        await sb.from("periods").update({ end_date: date }).eq("id", p.id);
+        const { error: upErr } = await sb.from("periods").update({ end_date: date }).eq("id", p.id);
+        if (upErr) throw upErr;
         const pair = await loadPair(me.pair_id);
         const st = computeStats(await loadPeriods(me.pair_id), pair.settings, today);
         let push = null;
@@ -391,7 +467,10 @@ Deno.serve(async (req) => {
         const near = periods.find((p) => p.id !== body.id && Math.abs(diff(p.start_date, start)) < 10);
         if (near) throw new ApiError("duplicate", `${fmt(near.start_date)} 開始の記録と近すぎます。`, 409);
         if (body.id) await sb.from("periods").update({ start_date: start, end_date: end }).eq("id", String(body.id)).eq("pair_id", me.pair_id);
-        else await sb.from("periods").insert({ pair_id: me.pair_id, start_date: start, end_date: end });
+        else {
+          if (periods.length >= MAX_PERIODS) throw new ApiError("too_many", "記録の上限に達しています。", 409);
+          await sb.from("periods").insert({ pair_id: me.pair_id, start_date: start, end_date: end });
+        }
         return json({ ok: true, state: await buildState(me) });
       }
       case "period_delete": {
@@ -399,15 +478,13 @@ Deno.serve(async (req) => {
         return json({ ok: true, state: await buildState(me) });
       }
       case "day_save": {
-        if (!isDate(body.date)) throw new ApiError("bad_request", "日付が不正です。");
-        const row = {
-          pair_id: me.pair_id, date: body.date,
-          flow: body.flow || null, mood: body.mood ? String(body.mood).slice(0, 200) : null,
-          symptoms: Array.isArray(body.symptoms) ? body.symptoms.map(String).slice(0, 20) : [],
-          others: Array.isArray(body.others) ? body.others.map((x: unknown) => String(x).slice(0, 30)).slice(0, 30) : [],
-          memo: String(body.memo || "").slice(0, 1000), updated_at: new Date().toISOString(),
-        };
-        await sb.from("days").upsert(row, { onConflict: "pair_id,date" });
+        if (!isDate(body.date) || diff(body.date, today) < 0) throw new ApiError("bad_request", "日付が不正です。");
+        const { count: dayCount } = await sb.from("days").select("date", { count: "exact", head: true }).eq("pair_id", me.pair_id);
+        if ((dayCount ?? 0) >= MAX_DAYS) {
+          const { data: exists } = await sb.from("days").select("date").eq("pair_id", me.pair_id).eq("date", body.date).maybeSingle();
+          if (!exists) throw new ApiError("too_many", "記録の上限に達しています。", 409);
+        }
+        await sb.from("days").upsert(dayRow(me.pair_id, body), { onConflict: "pair_id,date" });
         return json({ ok: true, state: await buildState(me) });
       }
       case "day_delete": {
@@ -418,6 +495,7 @@ Deno.serve(async (req) => {
         // build a patch of only the changed (and valid) keys, then merge it atomically in the database,
         // so two saves at the same moment never wipe each other's changes
         const patch: Record<string, unknown> = {};
+        if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) throw new ApiError("bad_request", "設定の内容が不正です。");
         for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof typeof DEFAULT_SETTINGS)[]) {
           if (!(k in (body.settings ?? {}))) continue;
           const v = body.settings[k];
@@ -457,24 +535,30 @@ Deno.serve(async (req) => {
         return json({ ok: true, state: await buildState(me) });
       }
       case "import": {
-        const ps = Array.isArray(body.periods) ? body.periods : [];
-        const ds = Array.isArray(body.days) ? body.days : [];
+        const ps = Array.isArray(body.periods) ? body.periods.slice(0, 500) : [];
+        const ds = Array.isArray(body.days) ? body.days.slice(0, 3000) : [];
         let n = 0;
         const existing = await loadPeriods(me.pair_id);
         for (const p of ps) {
-          if (!isDate(p.start) || existing.some((e) => Math.abs(diff(e.start_date, p.start)) < 10)) continue;
-          await sb.from("periods").insert({ pair_id: me.pair_id, start_date: p.start, end_date: isDate(p.end) ? p.end : null });
-          existing.push({ id: "", start_date: p.start, end_date: null }); n++;
+          if (!p || typeof p !== "object" || !isDate(p.start) || diff(p.start, today) < 0) continue;
+          if (existing.length >= MAX_PERIODS || existing.some((e) => Math.abs(diff(e.start_date, p.start)) < 10)) continue;
+          const end = isDate(p.end) && diff(p.start, p.end) >= 0 && diff(p.start, p.end) <= 13 && diff(p.end, today) >= 0 ? p.end : null;
+          await sb.from("periods").insert({ pair_id: me.pair_id, start_date: p.start, end_date: end });
+          existing.push({ id: "", start_date: p.start, end_date: end }); n++;
         }
-        for (const d of ds) {
-          if (!isDate(d.date)) continue;
-          await sb.from("days").upsert({ pair_id: me.pair_id, date: d.date, flow: d.flow || null, mood: d.mood || null,
-            symptoms: Array.isArray(d.symptoms) ? d.symptoms : [], others: Array.isArray(d.others) ? d.others : [], memo: d.memo || "" }, { onConflict: "pair_id,date" });
-          n++;
+        const rows = ds.filter((d: unknown) => d && typeof d === "object" && isDate((d as Record<string, unknown>).date) && diff((d as Record<string, string>).date, today) >= 0)
+          .map((d: Record<string, unknown>) => dayRow(me.pair_id, d));
+        const byDate = new Map(rows.map((r: { date: string }) => [r.date, r])); // one row per date
+        const { count: have } = await sb.from("days").select("date", { count: "exact", head: true }).eq("pair_id", me.pair_id);
+        rows.length = 0; rows.push(...[...byDate.values()].slice(0, Math.max(0, MAX_DAYS - (have ?? 0))));
+        for (let i = 0; i < rows.length; i += 200) {
+          await sb.from("days").upsert(rows.slice(i, i + 200), { onConflict: "pair_id,date" });
         }
+        n += rows.length;
         return json({ ok: true, imported: n, state: await buildState(me) });
       }
       case "delete_all": {
+        if (body.confirm !== "DELETE") throw new ApiError("bad_request", "削除の確認ができませんでした。", 400);
         await sb.from("pairs").delete().eq("id", me.pair_id); // cascades to everything
         return json({ ok: true });
       }

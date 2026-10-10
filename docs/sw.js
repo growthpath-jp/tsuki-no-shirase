@@ -1,6 +1,6 @@
 // つきのしらせ service worker: receives remote push, shows notifications, caches the app shell.
-const CACHE = "tsuki-v18";
-const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
+const CACHE = "tsuki-v19";
+const SHELL = ["./", "./index.html", "./app.js", "./phrase.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -17,8 +17,10 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     fetch(req)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        if (res.ok && res.type === "basic") {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        }
         return res;
       })
       .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
@@ -44,7 +46,8 @@ self.addEventListener("push", (e) => {
 
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = new URL((e.notification.data && e.notification.data.url) || "./", self.registration.scope).href;
+  let url = new URL((e.notification.data && e.notification.data.url) || "./", self.registration.scope).href;
+  if (!url.startsWith(self.registration.scope)) url = self.registration.scope; // only ever open this app
   e.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
       for (const c of cs) { if ("focus" in c) { c.navigate(url).catch(() => {}); return c.focus(); } }
